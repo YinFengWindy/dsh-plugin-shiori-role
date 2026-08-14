@@ -160,9 +160,7 @@ export function RoleSettings({ api, t }: RoleSettingsProps) {
                     ...draft,
                   })).then(next => {
                     if (next === null) return
-                    const saved = next.roles.find(role => role.id === editing?.id)
-                    if (editing === undefined) close()
-                    else if (saved !== undefined) open(saved)
+                    close()
                   })
                 }}
               >{t('save')}</Button>

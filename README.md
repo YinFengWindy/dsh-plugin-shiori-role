@@ -42,7 +42,7 @@ dependencies:
 
 Creating a blank Agent does not lock its role. The composer stages a pending selection, while the persona provider and memory tools resolve that selection dynamically. The first System Prompt assembly commits the role with binding version 2 before model execution continues. Existing version-1 bindings are migrated back to pending only when the live Agent log proves the session is still blank. Sessions with user messages or started turns never migrate or hot-switch.
 
-Deleting a role is rejected when an immutable session uses it. Mutable pending and workspace references are reassigned to the earliest remaining role, and every client surface refreshes from the same catalog mutation signal.
+Deleting a role removes it from the editable catalog and future-session selectors. If an immutable session already uses it, the plugin keeps a tombstone with its Prompt, assets, and memory so that resumed session remains reconstructable. Mutable pending and workspace references are reassigned to the earliest remaining role, and every client surface refreshes from the same catalog mutation signal.
 
 ## Assets And Theme
 

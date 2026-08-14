@@ -88,7 +88,9 @@ export class ShioriRoleService extends TypertRemoteService {
 
   /** List current durable role definitions. */
   list(): readonly ShioriRoleDefinition[] {
-    return [...this.requireRoleTable().entries()].map(([id, role]) => ({ id, ...role }))
+    return [...this.requireRoleTable().entries()]
+      .filter(([, role]) => role.deletedAt === undefined)
+      .map(([id, role]) => ({ id, ...role }))
   }
 
   /** Resolve a current durable role by id. */
@@ -127,14 +129,20 @@ export class ShioriRoleService extends TypertRemoteService {
   /** Delete an unbound role, its assets, and repair mutable role references. */
   @Remote('deleteRole')
   async deleteRole(roleId: string): Promise<RoleCatalogSnapshot> {
-    this.requireRole(roleId)
+    const current = this.requireRoleTable().get(roleId)
+    if (current === undefined) throw new UnknownRoleError(roleId)
     const usedBySession = [...this.requireSessionTable().entries()].some(([, row]) => row.roleId === roleId)
-    if (usedBySession) throw new Error('shiori-role: a role bound to a session cannot be deleted')
     const replacement = this.roleViews().find(role => role.id !== roleId)
     const updatedAt = new Date().toISOString()
-    await this.requireRoleTable().delete(roleId)
-    for (const [key, row] of this.requireAssetTable().entries()) {
-      if (row.roleId === roleId) await this.requireAssetTable().delete(key)
+    if (usedBySession) {
+      // Preserve immutable session snapshots while hiding the role from
+      // mutable catalogs and future-session selectors.
+      await this.requireRoleTable().put(roleId, { ...current, deletedAt: updatedAt })
+    } else {
+      await this.requireRoleTable().delete(roleId)
+      for (const [key, row] of this.requireAssetTable().entries()) {
+        if (row.roleId === roleId) await this.requireAssetTable().delete(key)
+      }
     }
     for (const [key, row] of this.requirePendingTable().entries()) {
       if (row.roleId !== roleId) continue
@@ -152,7 +160,7 @@ export class ShioriRoleService extends TypertRemoteService {
   /** Validate and save a role image through Harness attachment storage. */
   @Remote('uploadAsset')
   async uploadAsset(input: UploadRoleAssetInput): Promise<RoleCatalogSnapshot> {
-    this.requireRole(input.roleId)
+    this.requireActiveRole(input.roleId)
     const attachment = await this.ctx.attachments.saveImage({
       data: decodeBase64(input.data),
       mediaType: input.mediaType,
@@ -216,7 +224,7 @@ export class ShioriRoleService extends TypertRemoteService {
     const blank = this.isLiveBlankSession(sessionId)
     return {
       sessionId: rawSessionId,
-      roles: this.roleViews(),
+      roles: this.roleViews(committed?.roleId),
       ...(committed === undefined ? {} : { roleId: committed.roleId }),
       ...(pending === undefined ? {} : { pendingRoleId: pending }),
       locked: committed !== undefined && (committed.bindingVersion >= 2 || !blank),
@@ -227,7 +235,7 @@ export class ShioriRoleService extends TypertRemoteService {
   @Remote('stageSessionRole')
   async stageSessionRole(rawSessionId: string, roleId: string): Promise<SessionRoleSnapshot> {
     const sessionId = SessionId(rawSessionId)
-    this.requireRole(roleId)
+    this.requireActiveRole(roleId)
     const stored = this.requireSessionTable().get(sessionId)
     let committed = stored?.roleId ?? this.boundRoles.get(sessionId)
     if (stored !== undefined && stored.bindingVersion < 2 && this.isLiveBlankSession(sessionId)) {
@@ -248,14 +256,14 @@ export class ShioriRoleService extends TypertRemoteService {
 
   /** Set the workspace fallback role. */
   async select(workspaceId: WorkspaceId, roleId: string): Promise<void> {
-    this.requireRole(roleId)
+    this.requireActiveRole(roleId)
     await this.requireWorkspaceTable().put(String(workspaceId), { roleId, updatedAt: new Date().toISOString() })
   }
 
   /** Read the workspace fallback role. */
   async active(workspaceId: WorkspaceId): Promise<ShioriRoleDefinition | undefined> {
     const roleId = this.requireWorkspaceTable().get(String(workspaceId))?.roleId
-    return roleId === undefined ? undefined : this.requireRole(roleId)
+    return roleId === undefined ? undefined : this.requireActiveRole(roleId)
   }
 
   /** Compose a fixed role into an unpublished Agent scope. */
@@ -309,7 +317,7 @@ export class ShioriRoleService extends TypertRemoteService {
     await this.requireCatalogTable().put(CATALOG_MARKER, { initializedAt: now })
   }
 
-  private roleViews(): ShioriRoleView[] {
+  private roleViews(includeRoleId?: string): ShioriRoleView[] {
     const assets = new Map<string, RoleAssetView[]>()
     for (const [id, record] of this.requireAssetTable().entries()) {
       const values = assets.get(record.roleId) ?? []
@@ -317,6 +325,7 @@ export class ShioriRoleService extends TypertRemoteService {
       assets.set(record.roleId, values)
     }
     return [...this.requireRoleTable().entries()]
+      .filter(([id, role]) => role.deletedAt === undefined || id === includeRoleId)
       .map(([id, role]) => ({ id, ...role, assets: assets.get(id) ?? [] }))
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
   }
@@ -324,6 +333,12 @@ export class ShioriRoleService extends TypertRemoteService {
   private requireRole(roleId: string): ShioriRoleDefinition {
     const role = this.get(roleId)
     if (role === undefined) throw new UnknownRoleError(roleId)
+    return role
+  }
+
+  private requireActiveRole(roleId: string): ShioriRoleDefinition {
+    const role = this.requireRole(roleId)
+    if (this.requireRoleTable().get(roleId)?.deletedAt !== undefined) throw new UnknownRoleError(roleId)
     return role
   }
 

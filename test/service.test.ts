@@ -294,3 +294,27 @@ test('reassigns mutable references when their role is deleted', async () => {
   assert.equal((domain.tables.get('workspace_roles')?.get('workspace-a') as { roleId?: string })?.roleId, 'maintainer')
   assert.equal((await ctx.shioriRole.sessionSnapshot('blank-session')).pendingRoleId, 'maintainer')
 })
+
+test('soft-deletes roles retained by immutable sessions', async () => {
+  const ctx = new Context()
+  const domain = memoryDomain()
+  ctx.provide('storageDomain', domain.service as never)
+  ctx.provide('attachments', attachmentService().service as never)
+  ctx.provide('workspaceRegistry', { resolveByPath: async () => undefined } as never)
+  await ctx.plugin(ShioriRoleService, {
+    roles: [
+      { id: 'maintainer', name: 'Maintainer', prompt: 'Maintainer prompt.' },
+      { id: 'writer', name: 'Writer', prompt: 'Writer prompt.' },
+    ],
+  })
+  domain.tables.get('session_roles')?.set('bound-session', {
+    roleId: 'maintainer', boundAt: '2026-08-14T00:00:00.000Z', bindingVersion: 2,
+  })
+
+  await ctx.shioriRole.deleteRole('maintainer')
+
+  assert.deepEqual((await ctx.shioriRole.catalogSnapshot()).roles.map(role => role.id), ['writer'])
+  const session = await ctx.shioriRole.sessionSnapshot('bound-session')
+  assert.equal(session.roleId, 'maintainer')
+  assert.equal(session.roles.find(role => role.id === 'maintainer')?.name, 'Maintainer')
+})

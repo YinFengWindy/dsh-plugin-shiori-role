@@ -19,6 +19,7 @@ export const roleRecord = z.object({
   prompt: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  deletedAt: z.string().optional(),
 })
 
 /** Inferred durable role definition. */
