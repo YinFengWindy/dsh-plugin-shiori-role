@@ -1,6 +1,45 @@
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { z } from 'zod'
+
+const imageAttachmentRef: z.ZodType<ImageAttachmentRef> = z.object({
+  attachmentId: z.string(),
+  mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif']),
+  bytes: z.number().int().nonnegative(),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  name: z.string().optional(),
+}).transform(value => value as ImageAttachmentRef)
+
+/** Durable editable role definition. */
+export const roleRecord = z.object({
+  name: z.string(),
+  introduction: z.string(),
+  prompt: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+/** Inferred durable role definition. */
+export type RoleRecord = z.infer<typeof roleRecord>
+
+/** One-time seed-import marker. */
+export const roleCatalogRecord = z.object({ initializedAt: z.string() })
+
+/** Inferred role catalog marker. */
+export type RoleCatalogRecord = z.infer<typeof roleCatalogRecord>
+
+/** Durable role image reference; bytes are owned by the attachment service. */
+export const roleAssetRecord = z.object({
+  roleId: z.string(),
+  purpose: z.enum(['avatar', 'portrait', 'gallery', 'theme_background']),
+  attachment: imageAttachmentRef,
+  createdAt: z.string(),
+})
+
+/** Inferred durable role image record. */
+export type RoleAssetRecord = z.infer<typeof roleAssetRecord>
 
 /** Durable workspace-to-role selection record. */
 export const workspaceRoleRecord = z.object({
@@ -15,10 +54,20 @@ export type WorkspaceRoleRecord = z.infer<typeof workspaceRoleRecord>
 export const sessionRoleRecord = z.object({
   roleId: z.string(),
   boundAt: z.string(),
+  bindingVersion: z.number().int().positive().default(1),
 })
 
 /** Inferred durable session role record. */
 export type SessionRoleRecord = z.infer<typeof sessionRoleRecord>
+
+/** Mutable selection for a blank session, consumed at Agent publication. */
+export const pendingSessionRoleRecord = z.object({
+  roleId: z.string(),
+  updatedAt: z.string(),
+})
+
+/** Inferred pending session selection. */
+export type PendingSessionRoleRecord = z.infer<typeof pendingSessionRoleRecord>
 
 const roleMemoryScope = z.object({
   sessionKey: z.string().optional(),
@@ -58,6 +107,10 @@ export const shioriRoleDomainSpec = defineDomain({
   tables: {
     workspace_roles: domainTable<string, WorkspaceRoleRecord>(workspaceRoleRecord),
     session_roles: domainTable<SessionId, SessionRoleRecord>(sessionRoleRecord),
+    pending_session_roles: domainTable<SessionId, PendingSessionRoleRecord>(pendingSessionRoleRecord),
+    roles: domainTable<string, RoleRecord>(roleRecord),
+    role_assets: domainTable<string, RoleAssetRecord>(roleAssetRecord),
+    catalog: domainTable<string, RoleCatalogRecord>(roleCatalogRecord),
     memories: domainTable<string, StoredRoleMemoryRecord>(roleMemoryRecord),
   },
 })

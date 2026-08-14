@@ -22,6 +22,7 @@
     "paths": {
       "@deepseek-ai/cordis": ["../deepseek-harness/vendor/cordis/lib/types"],
       "@deepseek-ai/dsh-agent": ["../deepseek-harness/packages/core/agent/lib/types"],
+      "@deepseek-ai/dsh-attachment": ["../deepseek-harness/packages/attachment/attachment/lib/types"],
       "@deepseek-ai/dsh-session": ["../deepseek-harness/packages/core/session/lib/types"],
       "@deepseek-ai/dsh-session/types": ["../deepseek-harness/packages/core/session/lib/types/types.d.ts"],
       "@deepseek-ai/dsh-scope": ["../deepseek-harness/packages/core/scope/lib/types"],
@@ -33,6 +34,8 @@
       "@deepseek-ai/dsh-client-runtime/client": ["../deepseek-harness/packages/client/runtime/lib/types/client/index.d.ts"],
       "@deepseek-ai/dsh-client-locale/client": ["../deepseek-harness/packages/client/locale/lib/types/client/index.d.ts"],
       "@deepseek-ai/dsh-client-ui-primitives": ["../deepseek-harness/packages/client/ui-primitives/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-conversation/client": ["../deepseek-harness/packages/client/ui-conversation/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-theme/client": ["../deepseek-harness/packages/client/ui-theme/lib/types/client/index.d.ts"],
       "@deepseek-ai/dsh-client-ui-settings-plugins/client": ["../deepseek-harness/packages/client/ui-settings-plugins/lib/types/client/index.d.ts"],
       "@deepseek-ai/dsh-client-ui-settings/client": ["../deepseek-harness/packages/client/ui-settings/lib/types/client/index.d.ts"],
       "@deepseek-ai/dsh-client-ui-slots": ["../deepseek-harness/packages/client/ui-slots/lib/types/index.d.ts"],

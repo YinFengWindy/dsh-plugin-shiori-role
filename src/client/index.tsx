@@ -1,13 +1,25 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
-import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import remote from '../remote.ts'
-import type { WorkspaceRoleSnapshot } from '../types.ts'
+import type { RoleClientApi } from './api.ts'
+import { RoleSelector } from './RoleSelector.tsx'
+import { RoleSettings, type RoleLocaleKey } from './RoleSettings.tsx'
+import { ROLE_STYLES } from './styles.ts'
 
 const NS = 'shiori.role'
+
+const dictionaries = {
+  en: {
+    tab: 'Roles', loading: 'Loading...', create: 'Create role', createTitle: 'Create role', editTitle: 'Edit role', close: 'Close', delete: 'Delete', cancel: 'Cancel', save: 'Save', name: 'Name', introduction: 'Introduction', systemPrompt: 'System Prompt', avatar: 'Avatar', portrait: 'Standing illustration', assets: 'Asset library', fixedRole: 'This session role is fixed', chooseRole: 'Choose role',
+  },
+  zh: {
+    tab: '角色', loading: '加载中...', create: '创建角色', createTitle: '创建角色', editTitle: '编辑角色', close: '关闭', delete: '删除', cancel: '取消', save: '保存', name: '名称', introduction: '简介', systemPrompt: 'System Prompt', avatar: '头像', portrait: '立绘', assets: '素材库', fixedRole: '当前会话角色已固定', chooseRole: '选择角色',
+  },
+}
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -15,105 +27,20 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-const dictionaries = {
-  en: {
-    tab: 'Roles', workspace: 'Workspace', role: 'Role', loading: 'Loading...', error: 'Unable to load roles', retry: 'Retry', selected: 'Active',
-  },
-  zh: {
-    tab: '角色', workspace: '工作区', role: '角色', loading: '加载中...', error: '角色加载失败', retry: '重试', selected: '当前',
-  },
-}
-
-interface RoleTabInjected {
-  readonly workspaces: ClientContext['workspaces']['list']
-  snapshot(workspaceId: string): Promise<WorkspaceRoleSnapshot>
-  select(workspaceId: string, roleId: string): Promise<WorkspaceRoleSnapshot>
-}
-
-interface RoleTabProps extends RoleTabInjected {
-  t(key: keyof typeof dictionaries.en): string
-}
-
 interface ShioriRoleRemote {
-  snapshot(workspaceId: string): ReturnType<ClientContext['remote']['shioriRole']['snapshot']>
-  select(workspaceId: string, roleId: string): ReturnType<ClientContext['remote']['shioriRole']['select']>
+  catalogSnapshot(): ReturnType<ClientContext['remote']['shioriRole']['catalogSnapshot']>
+  saveRole(input: Parameters<ClientContext['remote']['shioriRole']['saveRole']>[0]): ReturnType<ClientContext['remote']['shioriRole']['saveRole']>
+  deleteRole(roleId: string): ReturnType<ClientContext['remote']['shioriRole']['deleteRole']>
+  uploadAsset(input: Parameters<ClientContext['remote']['shioriRole']['uploadAsset']>[0]): ReturnType<ClientContext['remote']['shioriRole']['uploadAsset']>
+  removeAsset(assetId: string): ReturnType<ClientContext['remote']['shioriRole']['removeAsset']>
+  assetData(assetId: string): ReturnType<ClientContext['remote']['shioriRole']['assetData']>
+  sessionSnapshot(sessionId: string): ReturnType<ClientContext['remote']['shioriRole']['sessionSnapshot']>
+  stageSessionRole(sessionId: string, roleId: string): ReturnType<ClientContext['remote']['shioriRole']['stageSessionRole']>
 }
 
-function RoleTab({ workspaces, snapshot, select, t }: RoleTabProps) {
-  const workspaceState = useSyncExternalStore(workspaces.subscribe, workspaces.getSnapshot, workspaces.getSnapshot)
-  const [workspaceId, setWorkspaceId] = useState('')
-  const [state, setState] = useState<WorkspaceRoleSnapshot | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const currentWorkspace = useMemo(
-    () => workspaceState.items.find(item => item.workspaceId === workspaceId),
-    [workspaceId, workspaceState.items],
-  )
+export const inject = ['slots', 'locale', 'remote', 'theme']
 
-  useEffect(() => {
-    if (workspaceId || workspaceState.items.length === 0) return
-    setWorkspaceId(String(workspaceState.recentWorkspaceId ?? workspaceState.items[0]?.workspaceId ?? ''))
-  }, [workspaceId, workspaceState.items, workspaceState.recentWorkspaceId])
-
-  const load = useCallback((): void => {
-    if (!workspaceId) return
-    setError(null)
-    setState(null)
-    void snapshot(workspaceId).then(setState, cause => {
-      setError(cause instanceof Error ? cause.message : String(cause))
-    })
-  }, [snapshot, workspaceId])
-
-  useEffect(load, [load])
-
-  return (
-    <div style={{ display: 'grid', gap: 16, maxWidth: 620 }}>
-      <label style={{ display: 'grid', gap: 6, fontSize: 13 }}>
-        <span>{t('workspace')}</span>
-        <select
-          value={workspaceId}
-          onChange={event => { setWorkspaceId(event.currentTarget.value) }}
-          style={{ minHeight: 36, padding: '0 10px', borderRadius: 6 }}
-        >
-          {workspaceState.items.map(workspace => (
-            <option key={workspace.workspaceId} value={workspace.workspaceId}>{workspace.title}</option>
-          ))}
-        </select>
-      </label>
-      {error !== null ? <div role="alert"><span>{t('error')}: {error}</span> <Button variant="outline" onClick={load}>{t('retry')}</Button></div> : null}
-      {error === null && workspaceId && state === null ? <p>{t('loading')}</p> : null}
-      {state !== null && currentWorkspace !== undefined ? (
-        <div style={{ display: 'grid', gap: 8 }} aria-label={t('role')}>
-          {state.roles.map(role => {
-            const active = role.id === state.activeRoleId
-            return (
-              <Button
-                key={role.id}
-                variant={active ? 'primary' : 'outline'}
-                disabled={busy}
-                onClick={() => {
-                  setBusy(true)
-                  setError(null)
-                  void select(workspaceId, role.id)
-                    .then(setState, cause => {
-                      setError(cause instanceof Error ? cause.message : String(cause))
-                    })
-                    .finally(() => { setBusy(false) })
-                }}
-              >
-                {role.name}{active ? ` · ${t('selected')}` : ''}
-              </Button>
-            )
-          })}
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
-export const inject = ['slots', 'locale', 'remote', 'workspaces']
-
-/** Mount the generated Remote face and contribute the workspace role tab. */
+/** Mount Remote, role management, composer binding, and role-owned theme layers. */
 export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
   const disposeRemote = await ctx.remote.$mount(remote)
   const roleRemote = ctx.get('remote.shioriRole') as ShioriRoleRemote | undefined
@@ -121,31 +48,64 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     await disposeRemote()
     throw new Error('shiori-role: Remote namespace did not start')
   }
+  const catalogListeners = new Set<() => void>()
+  const mutateCatalog = async (request: ReturnType<ShioriRoleRemote['saveRole']>) => {
+    const snapshot = await unwrap(request)
+    for (const listener of catalogListeners) listener()
+    return snapshot
+  }
+  const api: RoleClientApi = {
+    catalog: () => unwrap(roleRemote.catalogSnapshot()),
+    saveRole: input => mutateCatalog(roleRemote.saveRole(input)),
+    deleteRole: roleId => mutateCatalog(roleRemote.deleteRole(roleId)),
+    uploadAsset: input => mutateCatalog(roleRemote.uploadAsset(input)),
+    removeAsset: assetId => mutateCatalog(roleRemote.removeAsset(assetId)),
+    assetData: assetId => unwrap(roleRemote.assetData(assetId)),
+    session: sessionId => unwrap(roleRemote.sessionSnapshot(sessionId)),
+    stage: (sessionId, roleId) => unwrap(roleRemote.stageSessionRole(sessionId, roleId)),
+    subscribeCatalog: listener => {
+      catalogListeners.add(listener)
+      return () => { catalogListeners.delete(listener) }
+    },
+  }
   const disposeLocale = ctx.locale.register(NS, dictionaries)
-  const t = ctx.locale.bind(NS)
+  const t = ctx.locale.bind(NS) as (key: RoleLocaleKey) => string
+  const style = document.createElement('style')
+  style.dataset.shioriRole = 'styles'
+  style.textContent = ROLE_STYLES
+  document.head.append(style)
+
   const disposeTab = await ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
     name: 'settings.plugins.tab',
     id: 'shiori-roles',
     order: 20,
     label: () => t('tab'),
     locale: NS,
-    inject: (): RoleTabInjected => ({
-      workspaces: ctx.workspaces.list,
-      snapshot: async (workspaceId) => {
-        const result = await roleRemote.snapshot(workspaceId)
-        if (!result.ok) throw new Error(result.error.message)
-        return result.value
-      },
-      select: async (workspaceId, roleId) => {
-        const result = await roleRemote.select(workspaceId, roleId)
-        if (!result.ok) throw new Error(result.error.message)
-        return result.value
-      },
-    }),
-  }, RoleTab))
+    inject: () => ({ api, t }),
+  }, RoleSettings))
+  const disposeSelector = await ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
+    name: 'conversation.input.left',
+    id: 'shiori-role-selector',
+    order: 40,
+    locale: NS,
+    inject: () => ({ api, ctx, t }),
+  }, RoleSelector))
+
   return async () => {
+    disposeSelector()
     disposeTab()
+    style.remove()
+    document.documentElement.classList.remove('shiori-role-theme')
+    document.documentElement.style.removeProperty('--shiori-role-art')
+    document.documentElement.style.removeProperty('--shiori-role-overlay')
+    document.documentElement.style.removeProperty('--shiori-role-workspace-overlay')
     disposeLocale()
     await disposeRemote()
   }
+}
+
+async function unwrap<T>(request: Promise<{ ok: true; value: T } | { ok: false; error: { message: string } }>): Promise<T> {
+  const result = await request
+  if (!result.ok) throw new Error(result.error.message)
+  return result.value
 }

@@ -1,14 +1,22 @@
 # dsh-plugin-shiori-role
 
-Native DeepSeek Harness role plugin for workspace-scoped Shiori characters.
+A native DeepSeek Harness plugin for editable Shiori roles, session-scoped identity, role-owned visuals, and isolated durable memory.
 
-## Scope
+[中文说明](README.zh.md)
 
-This Cordis service lets a workspace select a default role for future sessions. The role is fixed when an Agent is published; changing the workspace role never hot-switches a running Agent. Agent presets remain responsible for capability composition.
+## Features
 
-## Configuration And UI
+- Manage roles in `Settings -> Plugins -> Roles`. The page contains role cards and a create card; each role opens in a modal for editing its name, introduction, System Prompt, avatar, standing illustration, and image library.
+- Select a role from the conversation composer. A blank session can switch roles repeatedly; the first System Prompt assembly commits the selection, and a running or resumed session remains immutable.
+- Preview the selected role immediately. The plugin applies role-owned theme tokens and uses the standing illustration as a sidebar/workspace visual layer without changing the user's light, dark, or system preference.
+- Store images through the Harness attachment service. Plugin KV tables retain only `ImageAttachmentRef` metadata, never base64 image blobs.
+- Keep durable memories isolated by role and expose `memorize`, `recall_memory`, and `forget_memory` in the bound Agent scope.
 
-Configure the role catalog at the host boundary:
+All backend services, Remote descriptors, client slots, styles, and theme cleanup live in this plugin. No DeepSeek Harness source patch is required.
+
+## Configuration
+
+Configured roles are imported once as editable seeds. Later edits and deletions remain durable and deleted seeds are not recreated after restart.
 
 ```yaml
 - id: shiori-role
@@ -17,27 +25,42 @@ Configure the role catalog at the host boundary:
     roles:
       - id: maintainer
         name: Shiori Maintainer
+        introduction: Maintains the Shiori workspace.
         prompt: You are the Shiori maintainer for this workspace.
 ```
 
-Harness Settings -> Plugins -> Roles exposes the workspace selector and configured role buttons. The host Remote namespace is `remote.shioriRole` with `snapshot(workspaceId)` and `select(workspaceId, roleId)`. The client contribution is mounted and disposed by the plugin.
+For local development, install the repository as a linked profile dependency:
+
+```yaml
+dependencies:
+  '@deepseek-ai/dsh-plugin-shiori-role': link:D://Coding//dsh-plugin-shiori-role
+```
 
 ## Role Binding
 
-`WorkspaceRoleRegistry` validates the role catalog and workspace defaults. `ShioriRoleService` stores workspace defaults and immutable session bindings in the `shiori_role` domain. When an Agent is published, the plugin resolves its workspace from the session `cwd`, mounts the persona and memory tools into that Agent scope, and persists the binding before the first prompt assembly continues. A resumed session always uses its durable binding, even if the workspace default has changed.
+`ShioriRoleService` stores editable roles, assets, workspace defaults, pending blank-session selections, and immutable session bindings in the `shiori_role` storage domain.
 
-The plugin does not add an unregistered custom session event to Harness core; the model-visible role prompt remains reconstructable from the recorded request header.
+Creating a blank Agent does not lock its role. The composer stages a pending selection, while the persona provider and memory tools resolve that selection dynamically. The first System Prompt assembly commits the role with binding version 2 before model execution continues. Existing version-1 bindings are migrated back to pending only when the live Agent log proves the session is still blank. Sessions with user messages or started turns never migrate or hot-switch.
+
+Deleting a role is rejected when an immutable session uses it. Mutable pending and workspace references are reassigned to the earliest remaining role, and every client surface refreshes from the same catalog mutation signal.
+
+## Assets And Theme
+
+Supported asset purposes are `avatar`, `portrait`, `gallery`, and `theme_background`. Avatar and portrait uploads are separate. Binary image data is saved and read through `ctx.attachments.saveImage/readImage`; role asset rows contain attachment references only.
+
+The selected role controls the composer avatar and role name. Its portrait can influence the workspace and sidebar through plugin-owned CSS and `ctx.theme.overrideTokens`. Plugin disposal removes the injected stylesheet, theme override, classes, CSS variables, and image URLs.
 
 ## Role Memory
 
-Each bound role has an isolated durable memory table in the same domain. The public contract mirrors Shiori's structured memory shape: scope, kind, domain, source references, evidence, status, durable ids, and reinforcement counts. The Agent-scope tools are `memorize` (save or reinforce), `recall_memory` (query active memories with optional text, kind, domain, and limit filters), and `forget_memory` (delete by id). Cross-role reads and deletes are rejected, and the current memory block is added to the Agent prompt with memory ids.
+Each role owns an isolated durable memory scope. The structured contract includes role/session/channel/chat scope, kind, domain, source references, evidence, status, durable ids, timestamps, and reinforcement counts. Cross-role reads and deletes are rejected, and active memories are rendered into the Agent's System Prompt context.
 
-This first native slice does not claim full Shiori `default_memory` parity. Retrieval is deterministic case-insensitive substring matching with exact-match reinforcement; embeddings, semantic reranking, and automatic post-turn extraction/ingestion are not implemented. Tools are registered after role binding and disposed with the Agent scope.
+This version intentionally does not claim full Shiori `default_memory` parity. It provides deterministic case-insensitive text retrieval, exact-match reinforcement, explicit memory tools, and prompt injection. Embeddings, hybrid retrieval/reranking, automatic post-turn extraction, consolidation, and background ingestion are not implemented yet.
 
 ## Development
 
 ```powershell
 D:\Coding\deepseek-harness\node_modules\.bin\tsc.cmd --noEmit --project tsconfig.json
 node --import file:///D:/Coding/deepseek-harness/node_modules/tsx/dist/esm/index.mjs --test test/*.test.ts
+D:\Coding\deepseek-harness\node_modules\.bin\tsc.cmd --project tsconfig.json
 D:\Coding\deepseek-harness\node_modules\.bin\tsdown.cmd --config tsdown.config.ts
 ```

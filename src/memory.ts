@@ -298,12 +298,18 @@ function mutationResultToJson(result: RoleMemoryMutationResult): JsonValue {
 }
 
 /** Mount role memory tools and a current-memory context into an Agent scope. */
-export function applyMemoryTools(ctx: Context, memory: ShioriMemoryService, input: string | RoleMemoryScope): void {
-  const scope = normalizedScope(typeof input === 'string' ? { roleId: input } : input)
+export function applyMemoryTools(
+  ctx: Context,
+  memory: ShioriMemoryService,
+  input: string | RoleMemoryScope | (() => RoleMemoryScope),
+): void {
+  const scope = () => normalizedScope(
+    typeof input === 'function' ? input() : typeof input === 'string' ? { roleId: input } : input,
+  )
   ctx.systemPrompt.context({
     name: 'shiori-role:memory',
     order: MEMORY_CONTEXT_ORDER,
-    text: () => memory.context(scope),
+    text: () => memory.context(scope()),
   })
   ctx.tools.register(defineTool({
     name: 'recall_memory',
@@ -316,7 +322,7 @@ export function applyMemoryTools(ctx: Context, memory: ShioriMemoryService, inpu
     },
     output: MEMORY_OUTPUT,
     execute: async args => queryResultToJson(memory.query({
-      scope,
+      scope: scope(),
       ...(args.query === undefined ? {} : { text: args.query }),
       ...(args.kind === undefined ? {} : { kinds: [args.kind] }),
       ...(args.domain === undefined ? {} : { domains: [normalizedDomain(args.domain)] }),
@@ -337,7 +343,7 @@ export function applyMemoryTools(ctx: Context, memory: ShioriMemoryService, inpu
     output: MEMORY_OUTPUT,
     execute: async args => mutationResultToJson(await memory.mutate({
       kind: 'remember',
-      scope,
+      scope: scope(),
       summary: args.content,
       ...(args.kind === undefined ? {} : { memoryKind: args.kind }),
       ...(args.domain === undefined ? {} : { memoryDomain: normalizedDomain(args.domain) }),
@@ -349,6 +355,6 @@ export function applyMemoryTools(ctx: Context, memory: ShioriMemoryService, inpu
     description: 'Delete a durable memory by id when it belongs to the currently bound role.',
     parameters: { id: { type: 'string', required: true, description: 'Memory id returned by recall_memory or memorize.' } },
     output: MEMORY_OUTPUT,
-    execute: async args => mutationResultToJson(await memory.mutate({ kind: 'forget', scope, ids: [args.id] })),
+    execute: async args => mutationResultToJson(await memory.mutate({ kind: 'forget', scope: scope(), ids: [args.id] })),
   }))
 }
