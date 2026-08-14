@@ -16,6 +16,10 @@
     "lib/index.js",
     "lib/types/**/*.d.ts"
   ],
+  "scripts": {
+    "test": "node --import tsx/esm --test test/**/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
   "license": "MIT",
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
@@ -24,6 +28,7 @@
   "devDependencies": {
     "@deepseek-ai/cordis": "*",
     "@deepseek-ai/dsh-system-prompt": "*",
+    "tsx": "^4.0.0",
     "typescript": "^5.0.0"
   }
 }

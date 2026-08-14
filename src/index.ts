@@ -6,6 +6,14 @@ import { PERSONA_ORDER, PERSONA_SECTION } from '@deepseek-ai/dsh-system-prompt'
 import type { ShioriRoleDefinition } from './types.ts'
 
 export type { ShioriRoleDefinition } from './types.ts'
+export {
+  DuplicateRoleError,
+  MemoryRoleSelectionStore,
+  UnknownRoleError,
+  WorkspaceRoleRegistry,
+  type RoleSelectionStore,
+  type WorkspaceKey,
+} from './registry.ts'
 
 /** Cordis plugin display name. */
 export const name = 'shiori-role'
