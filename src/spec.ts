@@ -85,8 +85,13 @@ const roleMemoryEvidence = z.object({
 /** Durable memory entry owned by one role. Defaults keep version-1 rows readable. */
 export const roleMemoryRecord = z.object({
   roleId: z.string(),
-  content: z.string(),
+  /** Canonical Shiori memory_items fields. Legacy fields remain readable. */
+  summary: z.string().optional(),
+  contentHash: z.string().default(''),
+  extra: z.record(z.string(), z.string()).default({}),
+  content: z.string().default(''),
   kind: z.string().default('fact'),
+  memoryType: z.string().optional(),
   domain: z.enum(['role_self', 'relationship', 'shared']).default('role_self'),
   scope: roleMemoryScope.default({}),
   sourceRef: z.string().default(''),

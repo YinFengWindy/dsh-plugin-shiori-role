@@ -143,6 +143,9 @@ export class ShioriRoleService extends TypertRemoteService {
       for (const [key, row] of this.requireAssetTable().entries()) {
         if (row.roleId === roleId) await this.requireAssetTable().delete(key)
       }
+      for (const [key, row] of this.requireMemoryTable().entries()) {
+        if (row.roleId === roleId) await this.requireMemoryTable().delete(key)
+      }
     }
     for (const [key, row] of this.requirePendingTable().entries()) {
       if (row.roleId !== roleId) continue
@@ -435,6 +438,11 @@ export class ShioriRoleService extends TypertRemoteService {
   private requireMemoryService(): ShioriMemoryService {
     if (this.memoryService === undefined) throw new Error('shiori-role: service is not started')
     return this.memoryService
+  }
+
+  private requireMemoryTable(): KvTable<string, StoredRoleMemoryRecord> {
+    if (this.memoryTable === undefined) throw new Error('shiori-role: service is not started')
+    return this.memoryTable
   }
 }
 

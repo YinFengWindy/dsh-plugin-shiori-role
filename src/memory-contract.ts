@@ -23,6 +23,10 @@ export interface RoleMemoryEvidence {
 export interface RoleMemory {
   readonly id: string
   readonly summary: string
+  /** Shiori memory_items memory_type, retained alongside the legacy kind alias. */
+  readonly memoryType: string
+  readonly contentHash: string
+  readonly extra: Readonly<Record<string, string>>
   readonly kind: string
   readonly domain: RoleMemoryDomain
   readonly scope: RoleMemoryScope
@@ -70,11 +74,13 @@ export type RoleMemoryMutation =
       readonly sourceRef?: string
       readonly happenedAt?: string
       readonly evidence?: readonly RoleMemoryEvidence[]
+      readonly extra?: Readonly<Record<string, string>>
     }
   | {
       readonly kind: 'forget'
       readonly scope: RoleMemoryScope
       readonly ids: readonly string[]
+      readonly sourceRefs?: readonly string[]
     }
 
 /** Result of one structured memory mutation. */

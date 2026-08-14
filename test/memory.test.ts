@@ -77,6 +77,30 @@ test('reports affected and missing ids without allowing cross-role deletion', as
   assert.equal(memory.recall('role-a').length, 0)
 })
 
+test('stores Shiori memory_items metadata and removes rows by source reference', async () => {
+  const memory = new ShioriMemoryService(table())
+  const saved = await memory.mutate({
+    kind: 'remember',
+    scope: { roleId: 'role-a', channel: 'desktop', chatId: 'chat-1' },
+    summary: 'A source-backed fact.',
+    memoryKind: 'event',
+    memoryDomain: 'shared',
+    sourceRef: 'turn:42',
+    extra: { topic: 'test' },
+  })
+  assert.equal(saved.item?.memoryType, 'event')
+  assert.match(saved.item?.contentHash ?? '', /^[0-9a-f]{8}$/)
+  assert.deepEqual(saved.item?.extra, {
+    roleId: 'role-a',
+    memoryDomain: 'shared',
+    scopeChannel: 'desktop',
+    scopeChatId: 'chat-1',
+    topic: 'test',
+  })
+  assert.deepEqual(await memory.forgetBySourceRef('role-a', 'turn:42'), [saved.item?.id])
+  assert.equal(memory.query({ scope: { roleId: 'role-a' } }).records.length, 0)
+})
+
 test('registers role memory tools and disposes them with the Agent scope', async () => {
   const memory = new ShioriMemoryService(table())
   await memory.memorize('role-a', 'Context-visible memory.')

@@ -52,7 +52,7 @@ The selected role controls the composer avatar and role name. Its portrait can i
 
 ## Role Memory
 
-Each role owns an isolated durable memory scope. The structured contract includes role/session/channel/chat scope, kind, domain, source references, evidence, status, durable ids, timestamps, and reinforcement counts. Cross-role reads and deletes are rejected, and active memories are rendered into the Agent's System Prompt context.
+Each role owns an isolated durable memory scope. Records follow the Shiori `memory_items` shape: `summary`, `memoryType`, `contentHash`, structured `extra` metadata, `sourceRef`, `happenedAt`, `status`, reinforcement count, durable ids, and timestamps. Role/session/channel/chat scope is persisted with the record. Cross-role reads and deletes are rejected; source references can be removed as a group, and active memories are rendered into the Agent's System Prompt context.
 
 This version intentionally does not claim full Shiori `default_memory` parity. It provides deterministic case-insensitive text retrieval, exact-match reinforcement, explicit memory tools, and prompt injection. Embeddings, hybrid retrieval/reranking, automatic post-turn extraction, consolidation, and background ingestion are not implemented yet.
 

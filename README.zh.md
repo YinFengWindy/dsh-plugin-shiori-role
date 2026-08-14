@@ -52,7 +52,7 @@ dependencies:
 
 ## 角色记忆
 
-每个角色拥有隔离的持久记忆作用域。结构化契约包含 role/session/channel/chat scope、kind、domain、来源引用、evidence、status、持久 id、时间戳和强化次数。跨角色读取与删除会被拒绝，active 记忆会注入 Agent 的 System Prompt 上下文。
+每个角色拥有隔离的持久记忆作用域。记录采用 Shiori `memory_items` 的字段语义：`summary`、`memoryType`、`contentHash`、结构化 `extra` 元数据、`sourceRef`、`happenedAt`、`status`、强化次数、持久 id 和时间戳；role/session/channel/chat scope 会随记录保存。跨角色读取与删除会被拒绝，也支持按来源引用批量清理；active 记忆会注入 Agent 的 System Prompt 上下文。
 
 当前版本不宣称与 Shiori `default_memory` 完全等价。现已实现确定性的大小写不敏感文本检索、精确重复强化、显式记忆工具和 prompt 注入；embedding、混合检索与 reranking、回合后自动抽取、记忆巩固和后台 ingest 尚未实现。
 

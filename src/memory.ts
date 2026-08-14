@@ -49,6 +49,15 @@ function limited(value?: number): number {
   return Math.max(1, Math.min(MAX_LIMIT, Math.floor(value)))
 }
 
+function contentHash(value: string): string {
+  let hash = 2166136261
+  for (const character of value.normalize('NFKC').trim().toLocaleLowerCase()) {
+    hash ^= character.codePointAt(0) ?? 0
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
 function scopeMatches(record: RoleMemory, scope: RoleMemoryScope): boolean {
   if (record.scope.roleId !== scope.roleId) return false
   if (scope.sessionKey !== undefined && record.scope.sessionKey !== scope.sessionKey) return false
@@ -98,6 +107,13 @@ export class ShioriMemoryService {
         if (await this.forget(scope.roleId, id)) affectedIds.push(id)
         else missingIds.push(id)
       }
+      for (const sourceRef of (request.sourceRefs ?? []).map(value => value.trim()).filter(Boolean)) {
+        for (const [id, record] of this.table.entries()) {
+          if (record.roleId === scope.roleId && (record.sourceRef === sourceRef || record.extra.sourceRef === sourceRef)) {
+            if (await this.forget(scope.roleId, id)) affectedIds.push(id)
+          }
+        }
+      }
       return {
         accepted: affectedIds.length > 0,
         status: affectedIds.length > 0 ? 'forgotten' : 'not_found',
@@ -110,13 +126,14 @@ export class ShioriMemoryService {
     if (!summary) throw new Error('shiori-role: memory summary must not be empty')
     const kind = request.memoryKind?.trim() || 'fact'
     const domain = normalizedDomain(request.memoryDomain)
+    const hash = contentHash(summary)
     const duplicate = [...this.table.entries()]
       .map(([id, record]) => this.toMemory(id, record))
       .find(record => record.status === 'active'
         && record.scope.roleId === scope.roleId
         && record.kind === kind
         && record.domain === domain
-        && record.summary.toLocaleLowerCase() === summary.toLocaleLowerCase())
+        && record.contentHash === hash)
     if (duplicate !== undefined) {
       const updated = this.toStored({
         ...duplicate,
@@ -132,8 +149,18 @@ export class ShioriMemoryService {
     const id = this.nextId(scope.roleId)
     const stored: StoredRoleMemoryRecord = {
       roleId: scope.roleId,
+      summary,
+      contentHash: hash,
+      extra: {
+        roleId: scope.roleId,
+        memoryDomain: domain,
+        ...(scope.channel === undefined ? {} : { scopeChannel: scope.channel }),
+        ...(scope.chatId === undefined ? {} : { scopeChatId: scope.chatId }),
+        ...(request.extra ?? {}),
+      },
       content: summary,
       kind,
+      memoryType: kind,
       domain,
       scope: {
         ...(scope.sessionKey === undefined ? {} : { sessionKey: scope.sessionKey }),
@@ -180,6 +207,17 @@ export class ShioriMemoryService {
     return this.table.delete(id)
   }
 
+  /** Remove all active and historical rows sourced from one turn or event. */
+  async forgetBySourceRef(roleId: string, sourceRef: string): Promise<readonly string[]> {
+    const ids: string[] = []
+    for (const [id, record] of this.table.entries()) {
+      if (record.roleId === roleId && (record.sourceRef === sourceRef || record.extra.sourceRef === sourceRef)) {
+        if (await this.forget(roleId, id)) ids.push(id)
+      }
+    }
+    return ids
+  }
+
   /** Build the model-facing current-memory snapshot for one bound role. */
   context(scope: RoleMemoryScope, limit = 8): string {
     return this.query({ scope, intent: 'context', effect: 'read_only', limit }).textBlock
@@ -194,8 +232,11 @@ export class ShioriMemoryService {
   private toMemory(id: string, record: StoredRoleMemoryRecord): RoleMemory {
     return {
       id,
-      summary: record.content,
-      kind: record.kind,
+      summary: record.summary ?? record.content,
+      memoryType: record.memoryType ?? record.kind,
+      contentHash: record.contentHash || contentHash(record.summary ?? record.content),
+      extra: { ...record.extra },
+      kind: record.memoryType ?? record.kind,
       domain: record.domain,
       scope: {
         roleId: record.roleId,
@@ -221,8 +262,12 @@ export class ShioriMemoryService {
     const { roleId, ...scope } = record.scope
     return {
       roleId,
+      summary: record.summary,
+      contentHash: record.contentHash,
+      extra: { ...record.extra },
       content: record.summary,
       kind: record.kind,
+      memoryType: record.memoryType,
       domain: record.domain,
       scope: {
         ...(scope.sessionKey === undefined ? {} : { sessionKey: scope.sessionKey }),
@@ -257,6 +302,9 @@ function memoryToJson(memory: RoleMemory): JsonValue {
   return {
     id: memory.id,
     summary: memory.summary,
+    memoryType: memory.memoryType,
+    contentHash: memory.contentHash,
+    extra: { ...memory.extra },
     kind: memory.kind,
     domain: memory.domain,
     scope: {
