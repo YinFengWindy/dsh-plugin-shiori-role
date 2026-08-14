@@ -9,3 +9,11 @@ declare module 'node:fs' {
 declare module 'node:path' {
   export function join(...parts: string[]): string
 }
+
+declare module 'node:os' {
+  export function homedir(): string
+}
+
+declare const process: {
+  readonly env: Readonly<Record<string, string | undefined>>
+}

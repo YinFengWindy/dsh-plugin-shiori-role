@@ -119,6 +119,18 @@ test('persists workspace memory below shiori-plugin/role/<role>/memory', async (
   }
 })
 
+test('shares one role memory file across independent DSH workspace services', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shiori-role-shared-memory-'))
+  try {
+    const first = new ShioriMemoryService(new WorkspaceMemoryTable(root))
+    await first.memorize('role-a', 'Shared by workspace one and two.')
+    const second = new ShioriMemoryService(new WorkspaceMemoryTable(root))
+    assert.equal(second.recall('role-a')[0]?.summary, 'Shared by workspace one and two.')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('registers role memory tools and disposes them with the Agent scope', async () => {
   const memory = new ShioriMemoryService(table())
   await memory.memorize('role-a', 'Context-visible memory.')

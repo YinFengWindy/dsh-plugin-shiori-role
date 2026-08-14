@@ -34,6 +34,8 @@ import type { RoleMemoryScope } from './memory-contract.ts'
 import { DuplicateRoleError, UnknownRoleError } from './registry.ts'
 import { applyMemoryTools, ShioriMemoryService } from './memory.ts'
 import { WorkspaceMemoryTable } from './file-memory-table.ts'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -47,6 +49,8 @@ const PRIMARY_ASSET_PURPOSES = new Set<RoleAssetPurpose>(['avatar', 'portrait', 
 /** Service configuration. Roles are imported once as editable catalog seeds. */
 export interface Config {
   readonly roles: readonly ShioriRoleDefinition[]
+  /** Optional global DSH data root; role memory is shared across DSH workspaces. */
+  readonly memoryRoot?: string
 }
 
 /** Durable role catalog, session binding, attachment, and role-memory service. */
@@ -62,7 +66,6 @@ export class ShioriRoleService extends TypertRemoteService {
   private catalogTable?: KvTable<string, RoleCatalogRecord>
   private memoryTable?: KvTable<string, StoredRoleMemoryRecord>
   private memoryService?: ShioriMemoryService
-  private readonly workspaceMemoryServices = new Map<string, ShioriMemoryService>()
   private readonly boundRoles = new Map<SessionIdType, string>()
 
   constructor(ctx: Context, readonly config: Config) {
@@ -80,7 +83,7 @@ export class ShioriRoleService extends TypertRemoteService {
     this.catalogTable = this.domain.table('catalog')
     this.memoryTable = this.domain.table('memories')
     await this.initializeCatalog()
-    this.memoryService = new ShioriMemoryService(this.memoryTable)
+    this.memoryService = new ShioriMemoryService(new WorkspaceMemoryTable(resolveMemoryRoot(this.config.memoryRoot)))
     this.ctx.inject(['agents', 'systemPrompt', 'tools'], (runtimeCtx) => {
       for (const agent of runtimeCtx.agents.list()) this.mountAgent(agent)
       runtimeCtx.on('agent/created', ({ agent }) => { this.mountAgent(agent) })
@@ -148,7 +151,7 @@ export class ShioriRoleService extends TypertRemoteService {
       for (const [key, row] of this.requireMemoryTable().entries()) {
         if (row.roleId === roleId) await this.requireMemoryTable().delete(key)
       }
-      for (const memory of this.workspaceMemoryServices.values()) await memory.forgetRole(roleId)
+      await this.requireMemoryService().forgetRole(roleId)
     }
     for (const [key, row] of this.requirePendingTable().entries()) {
       if (row.roleId !== roleId) continue
@@ -444,19 +447,18 @@ export class ShioriRoleService extends TypertRemoteService {
   }
 
   private memoryForAgent(agent: Agent): ShioriMemoryService {
-    const cwd = agent.session.header.cwd
-    if (cwd === undefined) return this.requireMemoryService()
-    const existing = this.workspaceMemoryServices.get(cwd)
-    if (existing !== undefined) return existing
-    const service = new ShioriMemoryService(new WorkspaceMemoryTable(cwd))
-    this.workspaceMemoryServices.set(cwd, service)
-    return service
+    void agent
+    return this.requireMemoryService()
   }
 
   private requireMemoryTable(): KvTable<string, StoredRoleMemoryRecord> {
     if (this.memoryTable === undefined) throw new Error('shiori-role: service is not started')
     return this.memoryTable
   }
+}
+
+function resolveMemoryRoot(configured?: string): string {
+  return configured?.trim() || process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
 }
 
 function decodeBase64(value: string): Uint8Array {
