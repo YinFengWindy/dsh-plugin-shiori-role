@@ -218,6 +218,15 @@ export class ShioriMemoryService {
     return ids
   }
 
+  /** Remove every durable row owned by a role when its workspace entry is deleted. */
+  async forgetRole(roleId: string): Promise<readonly string[]> {
+    const ids = [...this.table.entries()]
+      .filter(([, record]) => record.roleId === roleId)
+      .map(([id]) => id)
+    for (const id of ids) await this.forget(roleId, id)
+    return ids
+  }
+
   /** Build the model-facing current-memory snapshot for one bound role. */
   context(scope: RoleMemoryScope, limit = 8): string {
     return this.query({ scope, intent: 'context', effect: 'read_only', limit }).textBlock

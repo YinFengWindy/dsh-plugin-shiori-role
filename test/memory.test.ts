@@ -4,6 +4,10 @@ import { Context } from '@deepseek-ai/cordis'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { applyMemoryTools, ShioriMemoryService } from '../src/memory.ts'
+import { WorkspaceMemoryTable } from '../src/file-memory-table.ts'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 function table() {
   const values = new Map<string, any>()
@@ -99,6 +103,20 @@ test('stores Shiori memory_items metadata and removes rows by source reference',
   })
   assert.deepEqual(await memory.forgetBySourceRef('role-a', 'turn:42'), [saved.item?.id])
   assert.equal(memory.query({ scope: { roleId: 'role-a' } }).records.length, 0)
+})
+
+test('persists workspace memory below shiori-plugin/role/<role>/memory', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'shiori-role-memory-'))
+  try {
+    const first = new ShioriMemoryService(new WorkspaceMemoryTable(workspace))
+    const saved = await first.memorize('role-a', 'Survives a service restart.')
+    const path = join(workspace, 'shiori-plugin', 'role', 'role-a', 'memory', 'memory.json')
+    assert.match(await readFile(path, 'utf8'), /Survives a service restart/)
+    const restarted = new ShioriMemoryService(new WorkspaceMemoryTable(workspace))
+    assert.equal(restarted.recall('role-a')[0]?.id, saved.id)
+  } finally {
+    await rm(workspace, { recursive: true, force: true })
+  }
 })
 
 test('registers role memory tools and disposes them with the Agent scope', async () => {
