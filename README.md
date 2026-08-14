@@ -1,4 +1,4 @@
-# dsh-shiori-role
+# dsh-plugin-shiori-role
 
 Native DeepSeek Harness role plugin for workspace-scoped Shiori characters.
 
@@ -24,4 +24,3 @@ Agent presets remain responsible for the Agent's capability composition. A works
 5. Prove that changing the workspace role affects only later sessions.
 
 Shiori's existing Python runtime is the source of product behavior to migrate, but this repository is implemented as a native TypeScript/ESM Cordis package for deepseek-harness.
-
