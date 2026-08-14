@@ -1,8 +1,10 @@
 import { z } from 'zod'
 import type { RemoteResult, TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol'
 import type {
+  MemoryConfigSnapshot,
   RoleAssetData,
   RoleCatalogSnapshot,
+  SaveMemoryConfigInput,
   SaveRoleInput,
   SessionRoleSnapshot,
   UploadRoleAssetInput,
@@ -22,6 +24,8 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
       assetData: (assetId: string) => Promise<RemoteResult<RoleAssetData>>
       sessionSnapshot: (sessionId: string) => Promise<RemoteResult<SessionRoleSnapshot>>
       stageSessionRole: (sessionId: string, roleId: string) => Promise<RemoteResult<SessionRoleSnapshot>>
+      memoryConfigSnapshot: () => Promise<RemoteResult<MemoryConfigSnapshot>>
+      saveMemoryConfig: (input: SaveMemoryConfigInput) => Promise<RemoteResult<MemoryConfigSnapshot>>
     }
   }
 }
@@ -77,6 +81,18 @@ const uploadAssetSchema = z.object({
   data: z.string(),
   name: z.string().optional(),
 })
+const memoryEndpointSchema = z.object({
+  endpoint: z.string(),
+  apiKey: z.string().optional(),
+  model: z.string(),
+})
+const memoryConfigSnapshotSchema = z.object({
+  embedding: memoryEndpointSchema.optional(),
+  extraction: memoryEndpointSchema.optional(),
+  dbPath: z.string().optional(),
+  updatedAt: z.string().optional(),
+})
+const saveMemoryConfigSchema = memoryConfigSnapshotSchema.omit({ updatedAt: true })
 
 const json = (name: string, schema: z.ZodType) => ({
   name,
@@ -130,6 +146,14 @@ export const TYPERT_REMOTE: TypertRemoteContribution = {
     {
       id: '@deepseek-ai/dsh-plugin-shiori-role#shioriRole/stageSessionRole', service: 'shioriRole', namespace: 'shioriRole', method: 'stageSessionRole', invocation: { kind: 'direct' },
       parameters: [json('sessionId', z.string()), json('roleId', z.string())], result: result('@deepseek-ai/dsh-plugin-shiori-role#SessionRoleSnapshot', sessionSnapshotSchema),
+    },
+    {
+      id: '@deepseek-ai/dsh-plugin-shiori-role#shioriRole/memoryConfigSnapshot', service: 'shioriRole', namespace: 'shioriRole', method: 'memoryConfigSnapshot', invocation: { kind: 'direct' },
+      parameters: [], result: result('@deepseek-ai/dsh-plugin-shiori-role#MemoryConfigSnapshot', memoryConfigSnapshotSchema),
+    },
+    {
+      id: '@deepseek-ai/dsh-plugin-shiori-role#shioriRole/saveMemoryConfig', service: 'shioriRole', namespace: 'shioriRole', method: 'saveMemoryConfig', invocation: { kind: 'direct' },
+      parameters: [json('input', saveMemoryConfigSchema)], result: result('@deepseek-ai/dsh-plugin-shiori-role#MemoryConfigSnapshot', memoryConfigSnapshotSchema),
     },
   ],
 }

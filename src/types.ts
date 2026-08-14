@@ -77,3 +77,25 @@ export interface RoleAssetData {
   readonly asset: RoleAssetView
   readonly data: string
 }
+
+/** OpenAI 兼容端点配置（embedding / extraction 共用）。 */
+export interface MemoryEndpointConfig {
+  readonly endpoint: string
+  readonly apiKey?: string | undefined
+  readonly model: string
+}
+
+/** Client-safe memory configuration snapshot. */
+export interface MemoryConfigSnapshot {
+  readonly embedding?: MemoryEndpointConfig
+  readonly extraction?: MemoryEndpointConfig
+  readonly dbPath?: string
+  readonly updatedAt?: string
+}
+
+/** Memory configuration accepted by the save operation. */
+export interface SaveMemoryConfigInput {
+  readonly embedding?: MemoryEndpointConfig
+  readonly extraction?: MemoryEndpointConfig
+  readonly dbPath?: string
+}

@@ -61,14 +61,21 @@ export class DefaultMemoryEngine implements MemoryEngine {
 
   private readonly retriever: Retriever
   private readonly store: ShioriMemoryStore
-  private readonly embedder: Embedder | undefined
-  private readonly chat: ChatClient | undefined
+  private embedder: Embedder | undefined
+  private chat: ChatClient | undefined
 
   constructor(deps: EngineDeps) {
     this.store = deps.store
     this.embedder = deps.embedder
     this.chat = deps.chat
     this.retriever = new Retriever(this.store, deps.embedder, deps.config.retrieval)
+  }
+
+  /** 热替换 LLM 客户端（前端保存记忆配置后调用），已挂载的 agent 立即生效。 */
+  updateLlm(embedder: Embedder | undefined, chat: ChatClient | undefined): void {
+    this.embedder = embedder
+    this.chat = chat
+    this.retriever.setEmbedder(embedder)
   }
 
   // -------------------------------------------------------------------------

@@ -5,7 +5,7 @@
 
 export interface LlmEndpointConfig {
   readonly endpoint: string
-  readonly apiKey?: string
+  readonly apiKey?: string | undefined
   readonly model: string
 }
 

@@ -107,6 +107,23 @@ export const roleMemoryRecord = z.object({
 /** Inferred durable role memory record. */
 export type StoredRoleMemoryRecord = z.infer<typeof roleMemoryRecord>
 
+const memoryEndpointConfig = z.object({
+  endpoint: z.string(),
+  apiKey: z.string().optional(),
+  model: z.string(),
+})
+
+/** Runtime-editable memory configuration (embedding / extraction endpoints). */
+export const memoryConfigRecord = z.object({
+  embedding: memoryEndpointConfig.optional(),
+  extraction: memoryEndpointConfig.optional(),
+  dbPath: z.string().optional(),
+  updatedAt: z.string(),
+})
+
+/** Inferred durable memory configuration record. */
+export type MemoryConfigRecord = z.infer<typeof memoryConfigRecord>
+
 /** Domain storing the active role selected for each workspace. */
 export const shioriRoleDomainSpec = defineDomain({
   name: 'shiori_role',
@@ -119,5 +136,6 @@ export const shioriRoleDomainSpec = defineDomain({
     role_assets: domainTable<string, RoleAssetRecord>(roleAssetRecord),
     catalog: domainTable<string, RoleCatalogRecord>(roleCatalogRecord),
     memories: domainTable<string, StoredRoleMemoryRecord>(roleMemoryRecord),
+    memory_config: domainTable<string, MemoryConfigRecord>(memoryConfigRecord),
   },
 })

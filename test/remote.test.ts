@@ -14,7 +14,18 @@ test('publishes strict role catalog, asset, and session Remote descriptors', () 
     'shioriRole/assetData',
     'shioriRole/sessionSnapshot',
     'shioriRole/stageSessionRole',
+    'shioriRole/memoryConfigSnapshot',
+    'shioriRole/saveMemoryConfig',
   ])
+
+  const memory = remote.descriptors.find(item => item.method === 'saveMemoryConfig')
+  assert.deepEqual(memory?.result.schema.parse({
+    embedding: { endpoint: 'https://e.test/v1', model: 'm' },
+    extraction: { endpoint: 'https://c.test/v1', model: 'c', apiKey: 'k' },
+  }), {
+    embedding: { endpoint: 'https://e.test/v1', model: 'm' },
+    extraction: { endpoint: 'https://c.test/v1', model: 'c', apiKey: 'k' },
+  })
 
   const role = {
     id: 'maintainer', name: 'Maintainer', introduction: 'Maintains Shiori.', prompt: 'Prompt.', assets: [],

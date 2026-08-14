@@ -410,3 +410,60 @@ test('extracts durable memories after a completed turn when extraction is config
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test('persists memory configuration and hot-applies it to the engine', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shiori-role-memconfig-'))
+  let serviceFiber: Awaited<ReturnType<Context['plugin']>> | undefined
+  try {
+    const ctx = new Context()
+    const domain = memoryDomain()
+    ctx.provide('storageDomain', domain.service as never)
+    ctx.provide('attachments', attachmentService().service as never)
+    ctx.provide('workspaceRegistry', { resolveByPath: async () => undefined } as never)
+    serviceFiber = await ctx.plugin(ShioriRoleService, {
+      roles: [{ id: 'maintainer', name: 'Maintainer', prompt: 'Prompt.' }],
+      memoryRoot: root,
+    })
+
+    // 未配置时为空快照
+    assert.deepEqual(await ctx.shioriRole.memoryConfigSnapshot(), {})
+
+    // 保存 embedding + extraction → KV 持久化 + 快照返回
+    const saved = await ctx.shioriRole.saveMemoryConfig({
+      embedding: { endpoint: 'https://embedding.test/v1', model: 'text-embedding-v3' },
+      extraction: { endpoint: 'https://chat.test/v1', model: 'gpt-4o-mini', apiKey: 'secret' },
+    })
+    assert.equal(saved.embedding?.endpoint, 'https://embedding.test/v1')
+    assert.equal(saved.extraction?.apiKey, 'secret')
+    assert.ok(saved.updatedAt)
+    const stored = domain.tables.get('memory_config')?.get('config') as { embedding?: { model?: string }; extraction?: { apiKey?: string } } | undefined
+    assert.equal(stored?.embedding?.model, 'text-embedding-v3')
+    assert.equal(stored?.extraction?.apiKey, 'secret')
+
+    // 引擎热生效：保存后再写入记忆，embedding 端点应被调用
+    const restore = stubFetchChat((url, init) => {
+      if (!url.endsWith('/embeddings')) throw new Error(`unexpected url ${url}`)
+      const body = JSON.parse(String(init?.body)) as { input: string[] }
+      return jsonResponse({ data: body.input.map((text, index) => ({ index, embedding: [0.1, 0.2, 0.3] })) })
+    })
+    try {
+      const result = await ctx.shioriRole.memory().mutate({
+        kind: 'remember',
+        scope: { roleId: 'maintainer' },
+        summary: 'Hot-applied embedding works.',
+      })
+      assert.equal(result.accepted, true)
+    } finally {
+      restore()
+    }
+
+    // 清空配置 → 端点回到空（updatedAt 保留为最后修改时间）
+    const cleared = await ctx.shioriRole.saveMemoryConfig({})
+    assert.equal(cleared.embedding, undefined)
+    assert.equal(cleared.extraction, undefined)
+    assert.equal(cleared.dbPath, undefined)
+  } finally {
+    if (serviceFiber !== undefined) await serviceFiber.dispose()
+    await rm(root, { recursive: true, force: true })
+  }
+})

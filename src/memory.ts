@@ -23,14 +23,14 @@ interface MarkdownMemoryTable {
 /** OpenAI-compatible embedding endpoint used by the semantic layer. */
 export interface MemoryEmbeddingConfig {
   readonly endpoint: string
-  readonly apiKey?: string
+  readonly apiKey?: string | undefined
   readonly model: string
 }
 
 /** OpenAI-compatible chat endpoint used for post-turn extraction. */
 export interface MemoryExtractionConfig {
   readonly endpoint: string
-  readonly apiKey?: string
+  readonly apiKey?: string | undefined
   readonly model: string
 }
 

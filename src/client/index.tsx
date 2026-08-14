@@ -15,9 +15,11 @@ const NS = 'shiori.role'
 const dictionaries = {
   en: {
     tab: 'Roles', loading: 'Loading...', create: 'Create role', createTitle: 'Create role', editTitle: 'Edit role', close: 'Close', delete: 'Delete', cancel: 'Cancel', save: 'Save', name: 'Name', introduction: 'Introduction', systemPrompt: 'System Prompt', avatar: 'Avatar', portrait: 'Standing illustration', assets: 'Asset library', fixedRole: 'This session role is fixed', chooseRole: 'Choose role',
+    memory: 'Memory', memoryHint: 'Semantic memory endpoints. Embedding powers vector retrieval and automatic supersede; extraction powers post-turn memory extraction. Leave an endpoint empty to disable it.', embedding: 'Embedding', extraction: 'Extraction', endpoint: 'Endpoint', model: 'Model', apiKey: 'API Key', dbPath: 'Database path (optional)', saveMemory: 'Save memory config', memorySaved: 'Saved and applied.', memoryError: 'Failed to save memory config.',
   },
   zh: {
     tab: '角色', loading: '加载中...', create: '创建角色', createTitle: '创建角色', editTitle: '编辑角色', close: '关闭', delete: '删除', cancel: '取消', save: '保存', name: '名称', introduction: '简介', systemPrompt: 'System Prompt', avatar: '头像', portrait: '立绘', assets: '素材库', fixedRole: '当前会话角色已固定', chooseRole: '选择角色',
+    memory: '记忆', memoryHint: '语义记忆层端点：embedding 用于向量检索与自动去重退休，extraction 用于回合后抽取。留空即禁用。', embedding: 'Embedding 端点', extraction: '抽取端点', endpoint: 'Endpoint', model: 'Model', apiKey: 'API Key', dbPath: '数据库路径（可选）', saveMemory: '保存记忆配置', memorySaved: '已保存并立即生效。', memoryError: '记忆配置保存失败。',
   },
 }
 
@@ -36,6 +38,8 @@ interface ShioriRoleRemote {
   assetData(assetId: string): ReturnType<ClientContext['remote']['shioriRole']['assetData']>
   sessionSnapshot(sessionId: string): ReturnType<ClientContext['remote']['shioriRole']['sessionSnapshot']>
   stageSessionRole(sessionId: string, roleId: string): ReturnType<ClientContext['remote']['shioriRole']['stageSessionRole']>
+  memoryConfigSnapshot(): ReturnType<ClientContext['remote']['shioriRole']['memoryConfigSnapshot']>
+  saveMemoryConfig(input: Parameters<ClientContext['remote']['shioriRole']['saveMemoryConfig']>[0]): ReturnType<ClientContext['remote']['shioriRole']['saveMemoryConfig']>
 }
 
 export const inject = ['slots', 'locale', 'remote', 'theme']
@@ -63,6 +67,8 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     assetData: assetId => unwrap(roleRemote.assetData(assetId)),
     session: sessionId => unwrap(roleRemote.sessionSnapshot(sessionId)),
     stage: (sessionId, roleId) => unwrap(roleRemote.stageSessionRole(sessionId, roleId)),
+    memoryConfig: () => unwrap(roleRemote.memoryConfigSnapshot()),
+    saveMemoryConfig: input => unwrap(roleRemote.saveMemoryConfig(input)),
     subscribeCatalog: listener => {
       catalogListeners.add(listener)
       return () => { catalogListeners.delete(listener) }

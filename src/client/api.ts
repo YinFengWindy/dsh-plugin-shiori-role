@@ -1,6 +1,8 @@
 import type {
+  MemoryConfigSnapshot,
   RoleAssetData,
   RoleCatalogSnapshot,
+  SaveMemoryConfigInput,
   SaveRoleInput,
   SessionRoleSnapshot,
   UploadRoleAssetInput,
@@ -16,6 +18,8 @@ export interface RoleClientApi {
   assetData(assetId: string): Promise<RoleAssetData>
   session(sessionId: string): Promise<SessionRoleSnapshot>
   stage(sessionId: string, roleId: string): Promise<SessionRoleSnapshot>
+  memoryConfig(): Promise<MemoryConfigSnapshot>
+  saveMemoryConfig(input: SaveMemoryConfigInput): Promise<MemoryConfigSnapshot>
   /** Subscribe to successful role catalog mutations from any plugin surface. */
   subscribeCatalog(listener: () => void): () => void
 }

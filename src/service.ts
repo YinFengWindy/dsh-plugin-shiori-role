@@ -9,6 +9,7 @@ import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { SessionId, type SessionId as SessionIdType } from '@deepseek-ai/dsh-session'
 import {
   shioriRoleDomainSpec,
+  type MemoryConfigRecord,
   type PendingSessionRoleRecord,
   type RoleAssetRecord,
   type RoleCatalogRecord,
@@ -29,6 +30,9 @@ import type {
   ShioriRoleView,
   UploadRoleAssetInput,
   WorkspaceRoleSnapshot,
+  MemoryConfigSnapshot,
+  MemoryEndpointConfig,
+  SaveMemoryConfigInput,
 } from './types.ts'
 import type { RoleMemoryScope } from './memory-contract.ts'
 import { DuplicateRoleError, UnknownRoleError } from './registry.ts'
@@ -48,6 +52,7 @@ declare module '@deepseek-ai/cordis' {
 }
 
 const CATALOG_MARKER = 'initialized'
+const CONFIG_KEY = 'config'
 const PRIMARY_ASSET_PURPOSES = new Set<RoleAssetPurpose>(['avatar', 'portrait', 'theme_background'])
 
 /** Service configuration. Roles are imported once as editable catalog seeds. */
@@ -76,6 +81,7 @@ export class ShioriRoleService extends TypertRemoteService {
   private assetTable?: KvTable<string, RoleAssetRecord>
   private catalogTable?: KvTable<string, RoleCatalogRecord>
   private memoryTable?: KvTable<string, StoredRoleMemoryRecord>
+  private memoryConfigTable?: KvTable<string, MemoryConfigRecord>
   private memoryStore?: ShioriMemoryStore
   private memoryEngine?: DefaultMemoryEngine
   private readonly boundRoles = new Map<SessionIdType, string>()
@@ -94,16 +100,18 @@ export class ShioriRoleService extends TypertRemoteService {
     this.assetTable = this.domain.table('role_assets')
     this.catalogTable = this.domain.table('catalog')
     this.memoryTable = this.domain.table('memories')
+    this.memoryConfigTable = this.domain.table('memory_config')
     await this.initializeCatalog()
+    const effective = this.effectiveMemoryConfig()
     const memoryStore = new ShioriMemoryStore(
-      resolveMemoryDbPath(resolveMemoryRoot(this.config.memoryRoot), this.config.memory?.dbPath),
+      resolveMemoryDbPath(resolveMemoryRoot(this.config.memoryRoot), effective.dbPath ?? this.config.memory?.dbPath),
     )
     this.memoryStore = memoryStore
     this.ctx.effect(() => () => { memoryStore.close() }, 'shioriRole.memoryStoreClose')
     this.memoryEngine = new DefaultMemoryEngine({
       store: memoryStore,
-      ...(this.config.memory?.embedding === undefined ? {} : { embedder: new Embedder(this.config.memory.embedding) }),
-      ...(this.config.memory?.extraction === undefined ? {} : { chat: new ChatClient(this.config.memory.extraction) }),
+      ...(effective.embedding === undefined ? {} : { embedder: new Embedder(effective.embedding) }),
+      ...(effective.extraction === undefined ? {} : { chat: new ChatClient(effective.extraction) }),
       config: { retrieval: resolveMemoryConfig() },
     })
     this.ctx.inject(['agents', 'systemPrompt', 'tools'], (runtimeCtx) => {
@@ -244,6 +252,44 @@ export class ShioriRoleService extends TypertRemoteService {
   async selectRemote(workspaceId: string, roleId: string): Promise<WorkspaceRoleSnapshot> {
     await this.select(workspaceId as WorkspaceId, roleId)
     return this.snapshot(workspaceId)
+  }
+
+  /** Read the effective memory configuration (KV override on top of startup config). */
+  @Remote('memoryConfigSnapshot')
+  async memoryConfigSnapshot(): Promise<MemoryConfigSnapshot> {
+    return this.effectiveMemoryConfig()
+  }
+
+  /** Persist memory endpoints (embedding / extraction) and hot-apply them to the engine. */
+  @Remote('saveMemoryConfig')
+  async saveMemoryConfig(input: SaveMemoryConfigInput): Promise<MemoryConfigSnapshot> {
+    const record: MemoryConfigRecord = {
+      ...(input.embedding === undefined ? {} : { embedding: sanitizeEndpoint(input.embedding) }),
+      ...(input.extraction === undefined ? {} : { extraction: sanitizeEndpoint(input.extraction) }),
+      ...(input.dbPath?.trim() ? { dbPath: input.dbPath.trim() } : {}),
+      updatedAt: new Date().toISOString(),
+    }
+    await this.requireMemoryConfigTable().put(CONFIG_KEY, record)
+    this.memoryEngine?.updateLlm(
+      record.embedding === undefined ? undefined : new Embedder(record.embedding),
+      record.extraction === undefined ? undefined : new ChatClient(record.extraction),
+    )
+    return this.effectiveMemoryConfig()
+  }
+
+  /** KV 优先、启动 Config 兜底的当前记忆配置。 */
+  private effectiveMemoryConfig(): MemoryConfigSnapshot {
+    const stored = this.memoryConfigTable?.get(CONFIG_KEY)
+    const startup = this.config.memory
+    const embedding = stored?.embedding ?? startup?.embedding
+    const extraction = stored?.extraction ?? startup?.extraction
+    const dbPath = stored?.dbPath ?? startup?.dbPath
+    return {
+      ...(embedding === undefined ? {} : { embedding }),
+      ...(extraction === undefined ? {} : { extraction }),
+      ...(dbPath === undefined ? {} : { dbPath }),
+      ...(stored?.updatedAt === undefined ? {} : { updatedAt: stored.updatedAt }),
+    }
   }
 
   /** Read pending or immutable binding state for a session. */
@@ -502,10 +548,28 @@ export class ShioriRoleService extends TypertRemoteService {
     if (this.memoryTable === undefined) throw new Error('shiori-role: service is not started')
     return this.memoryTable
   }
+
+  private requireMemoryConfigTable(): KvTable<string, MemoryConfigRecord> {
+    if (this.memoryConfigTable === undefined) throw new Error('shiori-role: service is not started')
+    return this.memoryConfigTable
+  }
 }
 
 function resolveMemoryRoot(configured?: string): string {
   return configured?.trim() || process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
+}
+
+/** 校验并规整端点配置（endpoint / model 必填）。 */
+function sanitizeEndpoint(endpoint: MemoryEndpointConfig): MemoryEndpointConfig {
+  const url = endpoint.endpoint.trim()
+  const model = endpoint.model.trim()
+  if (!url) throw new Error('shiori-role: memory endpoint must not be empty')
+  if (!model) throw new Error('shiori-role: memory model must not be empty')
+  return {
+    endpoint: url,
+    model,
+    ...(endpoint.apiKey?.trim() ? { apiKey: endpoint.apiKey.trim() } : {}),
+  }
 }
 
 /** One model-facing conversation line per message within a turn, user and assistant only. */

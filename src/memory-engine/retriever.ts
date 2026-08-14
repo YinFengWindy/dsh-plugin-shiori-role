@@ -71,11 +71,20 @@ export interface InjectionBlock {
 }
 
 export class Retriever {
+  private embedder: Embedder | undefined
+
   constructor(
     private readonly store: ShioriMemoryStore,
-    private readonly embedder: Embedder | undefined,
+    embedder: Embedder | undefined,
     private readonly config: RetrievalConfig,
-  ) {}
+  ) {
+    this.embedder = embedder
+  }
+
+  /** 热替换 embedding 客户端（记忆配置热更新时调用）。 */
+  setEmbedder(embedder: Embedder | undefined): void {
+    this.embedder = embedder
+  }
 
   /** 统一检索入口：向量 lane + 关键词 lane + RRF 融合。 */
   async retrieve(options: RetrieveOptions): Promise<StoreHit[]> {

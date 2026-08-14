@@ -8,7 +8,7 @@ import {
   Modal,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ImageMediaType } from '@deepseek-ai/dsh-attachment'
-import type { RoleAssetPurpose, RoleCatalogSnapshot, ShioriRoleView } from '../types.ts'
+import type { MemoryConfigSnapshot, MemoryEndpointConfig, RoleAssetPurpose, RoleCatalogSnapshot, SaveMemoryConfigInput, ShioriRoleView } from '../types.ts'
 import type { RoleClientApi } from './api.ts'
 import { filePayload } from './api.ts'
 import { primaryAsset, useAssetUrl } from './assets.ts'
@@ -17,6 +17,8 @@ export type RoleLocaleKey =
   | 'tab' | 'loading' | 'create' | 'createTitle' | 'editTitle' | 'close' | 'delete' | 'cancel' | 'save'
   | 'name' | 'introduction' | 'systemPrompt' | 'avatar' | 'portrait' | 'assets'
   | 'fixedRole' | 'chooseRole'
+  | 'memory' | 'memoryHint' | 'embedding' | 'extraction' | 'endpoint' | 'model' | 'apiKey' | 'dbPath'
+  | 'saveMemory' | 'memorySaved' | 'memoryError'
 export type RoleText = (key: RoleLocaleKey) => string
 
 interface RoleSettingsProps {
@@ -131,6 +133,7 @@ export function RoleSettings({ api, t }: RoleSettingsProps) {
           </button>
         </div>
       ) : null}
+      <MemorySettings api={api} t={t} />
       <Modal
         open={editingId !== null}
         onClose={close}
@@ -197,6 +200,102 @@ export function RoleSettings({ api, t }: RoleSettingsProps) {
 function imageMediaType(value: string): ImageMediaType {
   if (value === 'image/png' || value === 'image/jpeg' || value === 'image/webp' || value === 'image/gif') return value
   throw new Error(`Unsupported image type: ${value || 'unknown'}`)
+}
+
+type EndpointKind = 'embedding' | 'extraction'
+type EndpointField = 'endpoint' | 'model' | 'apiKey'
+
+/** 记忆语义层配置表单：embedding / extraction 端点，留空即禁用。 */
+function MemorySettings({ api, t }: { api: RoleClientApi; t: RoleText }) {
+  const [config, setConfig] = useState<MemoryConfigSnapshot | null>(null)
+  const [draft, setDraft] = useState<SaveMemoryConfigInput>({})
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [saved, setSaved] = useState(false)
+
+  const load = useCallback(() => {
+    setError(null)
+    void api.memoryConfig().then(next => {
+      setConfig(next)
+      setDraft(draftFrom(next))
+    }, cause => { setError(messageOf(cause)) })
+  }, [api])
+  useEffect(load, [load])
+
+  const setEndpointField = (kind: EndpointKind, field: EndpointField, value: string) => {
+    setSaved(false)
+    setDraft(current => {
+      const endpoint = current[kind] ?? { endpoint: '', model: '' }
+      return { ...current, [kind]: { ...endpoint, [field]: value } }
+    })
+  }
+
+  const save = async () => {
+    setBusy(true)
+    setError(null)
+    setSaved(false)
+    try {
+      const input: SaveMemoryConfigInput = {
+        ...(draft.embedding?.endpoint.trim() ? { embedding: cleanEndpoint(draft.embedding) } : {}),
+        ...(draft.extraction?.endpoint.trim() ? { extraction: cleanEndpoint(draft.extraction) } : {}),
+        ...(draft.dbPath?.trim() ? { dbPath: draft.dbPath.trim() } : {}),
+      }
+      const next = await api.saveMemoryConfig(input)
+      setConfig(next)
+      setDraft(draftFrom(next))
+      setSaved(true)
+    } catch (cause) {
+      setError(messageOf(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="shiori-role-memory">
+      <h3 className="shiori-role-memory__title">{t('memory')}</h3>
+      <p className="shiori-role-memory__hint">{t('memoryHint')}</p>
+      {config === null && error === null ? <p>{t('loading')}</p> : null}
+      {config !== null ? (
+        <div className="shiori-role-memory__grid">
+          <fieldset className="shiori-role-memory__endpoint">
+            <legend>{t('embedding')}</legend>
+            <label className="shiori-role-field"><span>{t('endpoint')}</span><Input value={draft.embedding?.endpoint ?? ''} onChange={event => { setEndpointField('embedding', 'endpoint', event.currentTarget.value) }} placeholder="https://api.openai.com/v1" /></label>
+            <label className="shiori-role-field"><span>{t('model')}</span><Input value={draft.embedding?.model ?? ''} onChange={event => { setEndpointField('embedding', 'model', event.currentTarget.value) }} placeholder="text-embedding-3-small" /></label>
+            <label className="shiori-role-field"><span>{t('apiKey')}</span><Input type="password" value={draft.embedding?.apiKey ?? ''} onChange={event => { setEndpointField('embedding', 'apiKey', event.currentTarget.value) }} placeholder="sk-..." /></label>
+          </fieldset>
+          <fieldset className="shiori-role-memory__endpoint">
+            <legend>{t('extraction')}</legend>
+            <label className="shiori-role-field"><span>{t('endpoint')}</span><Input value={draft.extraction?.endpoint ?? ''} onChange={event => { setEndpointField('extraction', 'endpoint', event.currentTarget.value) }} placeholder="https://api.openai.com/v1" /></label>
+            <label className="shiori-role-field"><span>{t('model')}</span><Input value={draft.extraction?.model ?? ''} onChange={event => { setEndpointField('extraction', 'model', event.currentTarget.value) }} placeholder="gpt-4o-mini" /></label>
+            <label className="shiori-role-field"><span>{t('apiKey')}</span><Input type="password" value={draft.extraction?.apiKey ?? ''} onChange={event => { setEndpointField('extraction', 'apiKey', event.currentTarget.value) }} placeholder="sk-..." /></label>
+          </fieldset>
+        </div>
+      ) : null}
+      <label className="shiori-role-field shiori-role-memory__db"><span>{t('dbPath')}</span><Input value={draft.dbPath ?? ''} onChange={event => { setSaved(false); setDraft(current => ({ ...current, dbPath: event.currentTarget.value })) }} placeholder="shiori-plugin/role/memory2.db" /></label>
+      <div className="shiori-role-memory__actions">
+        <Button variant="primary" disabled={busy || config === null} onClick={() => { void save() }}>{t('saveMemory')}</Button>
+        {saved ? <span className="shiori-role-memory__status">{t('memorySaved')}</span> : null}
+      </div>
+      {error === null ? null : <div role="alert" className="shiori-role-error">{error}</div>}
+    </section>
+  )
+}
+
+function cleanEndpoint(endpoint: MemoryEndpointConfig): MemoryEndpointConfig {
+  return {
+    endpoint: endpoint.endpoint.trim(),
+    model: endpoint.model.trim(),
+    ...(endpoint.apiKey?.trim() ? { apiKey: endpoint.apiKey.trim() } : {}),
+  }
+}
+
+function draftFrom(snapshot: MemoryConfigSnapshot): SaveMemoryConfigInput {
+  return {
+    ...(snapshot.embedding === undefined ? {} : { embedding: { ...snapshot.embedding } }),
+    ...(snapshot.extraction === undefined ? {} : { extraction: { ...snapshot.extraction } }),
+    ...(snapshot.dbPath === undefined ? {} : { dbPath: snapshot.dbPath }),
+  }
 }
 
 function messageOf(cause: unknown): string {
