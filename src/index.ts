@@ -25,6 +25,11 @@ export {
   type StoredRoleMemoryRecord,
 } from './spec.ts'
 export { ShioriMemoryService, applyMemoryTools } from './memory.ts'
+export type {
+  ExtractedMemory,
+  MemoryEmbeddingConfig,
+  MemoryExtractionConfig,
+} from './memory.ts'
 export {
   DuplicateRoleError,
   MemoryRoleSelectionStore,

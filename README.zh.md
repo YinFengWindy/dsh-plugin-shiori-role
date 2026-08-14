@@ -54,7 +54,31 @@ dependencies:
 
 每个角色拥有隔离的持久记忆作用域，并由所有 DSH workspace 共享。全局目录 `$DSH_HOME/shiori-plugin/role/<role-id>/memory/` 包含同步的两层存储：`semantic.json` 保存 Shiori 风格的结构化记录，负责检索、去重、作用域、状态和强化；`MEMORY.md` 是模型实际读取且方便人工编辑的长期记忆文档。目录中还会按 Shiori 角色记忆布局初始化 `SELF.md`、`HISTORY.md`、`RECENT_CONTEXT.md` 和 `PENDING.md`。语义写入只同步 `MEMORY.md` 中带标记的自动区块，不覆盖区块外人工编写的 Markdown。
 
-当前版本不宣称与 Shiori `default_memory` 完全等价。现已实现确定性的大小写不敏感文本检索、精确重复强化、显式记忆工具和 prompt 注入；embedding、混合检索与 reranking、回合后自动抽取、记忆巩固和后台 ingest 尚未实现。
+配置 `memory` 块可以启用 Shiori 语义记忆层：`embedding` 提供 OpenAI 兼容的向量端点（写入时生成 embedding，查询时做独立向量召回），`extraction` 提供 OpenAI 兼容的 chat 端点（回合结束后异步抽取长期记忆）。两者缺省时自动降级为确定性文本检索，不配置任何端点也能正常工作。
+
+```yaml
+- id: shiori-role
+  name: '@deepseek-ai/dsh-plugin-shiori-role'
+  config:
+    roles:
+      - id: maintainer
+        name: Shiori Maintainer
+        introduction: 维护 Shiori 工作区。
+        prompt: 你是这个工作区的 Shiori 维护者。
+    memory:
+      embedding:
+        endpoint: https://api.openai.com/v1
+        apiKey: sk-...
+        model: text-embedding-3-small
+      extraction:
+        endpoint: https://api.openai.com/v1
+        apiKey: sk-...
+        model: gpt-4o-mini
+```
+
+检索镜像 Shiori `memory2` 的实现：关键词 lane 保留字面命中，向量 lane 独立按余弦相似度召回（阈值 0.35），两路排名通过 Reciprocal Rank Fusion（`1/(60+vec_rank) + 0.5/(60+keyword_rank)`）融合。回合后抽取同样对齐 Shiori：监听 `agent/turn-stopping`，把该回合的 `USER`/`ASSISTANT` 对话交给抽取端点，按 Shiori 的长期记忆契约（USER 原话锚点、跨 session 时效性、来源方向、不提取 event）输出 `profile` / `preference` / `procedure`，连同 `emotional_weight` 等字段异步写入记忆；显式 `memorize` 的写入仍走 content-hash 查重与强化。
+
+当前版本不宣称与 Shiori `default_memory` 完全等价。现已实现确定性的大小写不敏感文本检索、embedding 语义检索与混合 RRF 排序、精确重复强化、显式记忆工具、回合后自动抽取和 prompt 注入；记忆巩固（consolidation、supersede、merge）和后台 ingest 尚未实现。
 
 ## 开发验证
 

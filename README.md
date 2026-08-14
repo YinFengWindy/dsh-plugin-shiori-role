@@ -54,7 +54,31 @@ The selected role controls the composer avatar and role name. Its portrait can i
 
 Each role owns an isolated durable memory scope shared by every DSH workspace. The global `$DSH_HOME/shiori-plugin/role/<role-id>/memory/` directory has two synchronized layers: `semantic.json` stores Shiori-shaped structured records for query, deduplication, scope, status, and reinforcement; `MEMORY.md` is the model-facing and human-readable long-term document. `SELF.md`, `HISTORY.md`, `RECENT_CONTEXT.md`, and `PENDING.md` are initialized beside it using Shiori's role-memory document layout. Semantic writes update a marked block in `MEMORY.md` without replacing manually authored Markdown outside that block.
 
-This version intentionally does not claim full Shiori `default_memory` parity. It provides deterministic case-insensitive text retrieval, exact-match reinforcement, explicit memory tools, and prompt injection. Embeddings, hybrid retrieval/reranking, automatic post-turn extraction, consolidation, and background ingestion are not implemented yet.
+A `memory` config block enables the Shiori semantic layer: `embedding` points at an OpenAI-compatible vector endpoint (embeddings are generated on write and used for independent vector recall on query), and `extraction` points at an OpenAI-compatible chat endpoint (long-term memories are extracted asynchronously after each turn). When neither endpoint is configured, retrieval degrades to deterministic text search and everything still works.
+
+```yaml
+- id: shiori-role
+  name: '@deepseek-ai/dsh-plugin-shiori-role'
+  config:
+    roles:
+      - id: maintainer
+        name: Shiori Maintainer
+        introduction: Maintains the Shiori workspace.
+        prompt: You are the Shiori maintainer for this workspace.
+    memory:
+      embedding:
+        endpoint: https://api.openai.com/v1
+        apiKey: sk-...
+        model: text-embedding-3-small
+      extraction:
+        endpoint: https://api.openai.com/v1
+        apiKey: sk-...
+        model: gpt-4o-mini
+```
+
+Retrieval mirrors Shiori's `memory2`: the keyword lane keeps literal hits while the vector lane recalls semantically similar rows independently (cosine threshold 0.35), then Reciprocal Rank Fusion merges both ranked lanes (`1/(60+vec_rank) + 0.5/(60+keyword_rank)`). Post-turn extraction follows Shiori too: `agent/turn-stopping` feeds the turn's `USER`/`ASSISTANT` conversation to the extraction endpoint, which applies Shiori's long-term memory contract (verbatim user anchors, cross-session durability, source direction, no events) and returns `profile` / `preference` / `procedure` memories with `emotional_weight` and friends, persisted asynchronously. Explicit `memorize` writes still reinforce by content hash.
+
+This version intentionally does not claim full Shiori `default_memory` parity. It provides deterministic case-insensitive text retrieval, embedding semantic retrieval with hybrid RRF ranking, exact-match reinforcement, explicit memory tools, automatic post-turn extraction, and prompt injection. Consolidation (supersede/merge) and background ingestion are not implemented yet.
 
 ## Development
 

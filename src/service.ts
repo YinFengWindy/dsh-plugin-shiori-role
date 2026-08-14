@@ -32,7 +32,13 @@ import type {
 } from './types.ts'
 import type { RoleMemoryScope } from './memory-contract.ts'
 import { DuplicateRoleError, UnknownRoleError } from './registry.ts'
-import { applyMemoryTools, ShioriMemoryService } from './memory.ts'
+import {
+  applyMemoryTools,
+  extractMemories,
+  ShioriMemoryService,
+  type MemoryEmbeddingConfig,
+  type MemoryExtractionConfig,
+} from './memory.ts'
 import { WorkspaceMemoryTable } from './file-memory-table.ts'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -51,6 +57,11 @@ export interface Config {
   readonly roles: readonly ShioriRoleDefinition[]
   /** Optional global DSH data root; role memory is shared across DSH workspaces. */
   readonly memoryRoot?: string
+  /** Optional semantic memory layer: embedding retrieval and post-turn extraction. */
+  readonly memory?: {
+    readonly embedding?: MemoryEmbeddingConfig
+    readonly extraction?: MemoryExtractionConfig
+  }
 }
 
 /** Durable role catalog, session binding, attachment, and role-memory service. */
@@ -83,7 +94,10 @@ export class ShioriRoleService extends TypertRemoteService {
     this.catalogTable = this.domain.table('catalog')
     this.memoryTable = this.domain.table('memories')
     await this.initializeCatalog()
-    this.memoryService = new ShioriMemoryService(new WorkspaceMemoryTable(resolveMemoryRoot(this.config.memoryRoot)))
+    this.memoryService = new ShioriMemoryService(
+      new WorkspaceMemoryTable(resolveMemoryRoot(this.config.memoryRoot)),
+      this.config.memory?.embedding === undefined ? {} : { embedding: this.config.memory.embedding },
+    )
     this.ctx.inject(['agents', 'systemPrompt', 'tools'], (runtimeCtx) => {
       for (const agent of runtimeCtx.agents.list()) this.mountAgent(agent)
       runtimeCtx.on('agent/created', ({ agent }) => { this.mountAgent(agent) })
@@ -396,8 +410,41 @@ export class ShioriRoleService extends TypertRemoteService {
       const role = resolveRole()
       return { roleId: role.id, sessionKey: String(agent.session.id) } satisfies RoleMemoryScope
     })
+    agent.ctx.on('agent/turn-stopping', ({ turn }) => {
+      const extraction = this.config.memory?.extraction
+      if (extraction === undefined) return
+      const role = resolveRole()
+      const transcript = turnTranscript(agent, turn)
+      if (!transcript) return
+      void this.extractTurn(extraction, role, agent, turn, transcript).catch(error => {
+        this.ctx.logger.warn(`shiori-role: post-turn extraction failed: ${String(error)}`)
+      })
+    })
     const stored = this.requireSessionTable().get(agent.session.id)
     if (stored !== undefined) this.boundRoles.set(agent.session.id, stored.roleId)
+  }
+
+  /** Extract durable memories from one completed turn and persist them. */
+  private async extractTurn(
+    extraction: MemoryExtractionConfig,
+    role: ShioriRoleDefinition,
+    agent: Agent,
+    turn: number,
+    transcript: string,
+  ): Promise<void> {
+    const existingProfile = this.requireMemoryService().query({ scope: { roleId: role.id }, limit: 100 }).records
+      .filter(item => item.kind === 'profile' || item.kind === 'preference' || item.kind === 'procedure')
+      .map(item => `- [${item.kind}] ${item.summary}`)
+      .join('\n')
+      .slice(0, 6000)
+    const items = await extractMemories(extraction, transcript, existingProfile)
+    if (items.length === 0) return
+    await this.requireMemoryService().saveExtracted(
+      { roleId: role.id, sessionKey: String(agent.session.id) },
+      `turn:${turn}`,
+      items,
+      [{ kind: 'turn', refs: [`turn:${turn}`], sourceRef: String(agent.session.id) }],
+    )
   }
 
   private async commitSessionRole(sessionId: SessionIdType, roleId: string): Promise<void> {
@@ -459,6 +506,33 @@ export class ShioriRoleService extends TypertRemoteService {
 
 function resolveMemoryRoot(configured?: string): string {
   return configured?.trim() || process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
+}
+
+/** One model-facing conversation line per message within a turn, user and assistant only. */
+function turnTranscript(agent: Agent, turn: number): string {
+  const events = agent.session.events
+  const start = events.findIndex(event => event.type === 'turn/start' && event.data.turn === turn)
+  if (start === -1) return ''
+  const lines: string[] = []
+  for (let index = start + 1; index < events.length; index += 1) {
+    const event = events[index]!
+    if (event.type === 'turn/start') break
+    if (event.type === 'user/message' && event.data.source.kind === 'user') {
+      lines.push(`USER: ${messageText(event.data.content)}`)
+    } else if (event.type === 'assistant/message') {
+      lines.push(`ASSISTANT: ${messageText(event.data.message.content)}`)
+    }
+  }
+  return lines.join('\n')
+}
+
+/** Concatenate the visible text blocks of one message. */
+function messageText(blocks: readonly { readonly type: string; readonly text?: unknown }[]): string {
+  return blocks
+    .filter(block => block.type === 'text' && typeof block.text === 'string')
+    .map(block => block.text as string)
+    .join(' ')
+    .trim()
 }
 
 function decodeBase64(value: string): Uint8Array {

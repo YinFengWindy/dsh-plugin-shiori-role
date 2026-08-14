@@ -1,12 +1,37 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
-import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
+import AgentRegistry, { emitAgentEvent, type Agent } from '@deepseek-ai/dsh-agent'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { createScope, scopeOf, type Scope } from '@deepseek-ai/dsh-scope'
 import SystemPrompt, { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { ShioriRoleService } from '../src/service.ts'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+function jsonResponse(payload: unknown): Response {
+  return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } })
+}
+
+function stubFetchChat(handler: (url: string, init?: RequestInit) => Response | Promise<Response>): () => void {
+  const original = globalThis.fetch
+  globalThis.fetch = ((input: any, init?: any) => {
+    const url = typeof input === 'string' ? input : String(input)
+    return handler(url, init)
+  }) as typeof fetch
+  return () => { globalThis.fetch = original }
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  throw new Error('waitFor: condition not met before timeout')
+}
 
 function memoryDomain() {
   const tables = new Map<string, Map<string, unknown>>()
@@ -317,4 +342,70 @@ test('soft-deletes roles retained by immutable sessions', async () => {
   const session = await ctx.shioriRole.sessionSnapshot('bound-session')
   assert.equal(session.roleId, 'maintainer')
   assert.equal(session.roles.find(role => role.id === 'maintainer')?.name, 'Maintainer')
+})
+
+test('extracts durable memories after a completed turn when extraction is configured', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shiori-role-extraction-'))
+  const restore = stubFetchChat((url, init) => {
+    if (!url.endsWith('/chat/completions')) throw new Error(`unexpected url ${url}`)
+    const body = JSON.parse(String(init?.body)) as { messages?: Array<{ content: string }> }
+    assert.match(body.messages?.[0]?.content ?? '', /长期记忆提取器/)
+    return jsonResponse({
+      choices: [{ message: { content: JSON.stringify({
+        profile: [{ summary: '用户喜欢咖啡', category: 'personal_fact', emotional_weight: 4 }],
+        preference: [],
+        procedure: [],
+      }) } }],
+    })
+  })
+  try {
+    const ctx = new Context()
+    const domain = memoryDomain()
+    ctx.provide('storageDomain', domain.service as never)
+    ctx.provide('attachments', attachmentService().service as never)
+    ctx.provide('workspaceRegistry', {
+      list: () => [{ id: 'workspace-a', path: 'C:\\workspace' }],
+      resolveByPath: async () => ({ id: 'workspace-a' }),
+    } as never)
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(AgentRegistry)
+    await ctx.plugin(ShioriRoleService, {
+      roles: [{ id: 'maintainer', name: 'Maintainer', prompt: 'Maintainer prompt.' }],
+      memoryRoot: root,
+      memory: { extraction: { endpoint: 'https://chat.test/v1', model: 'test-chat' } },
+    })
+    await ctx.shioriRole.select('workspace-a' as never, 'maintainer')
+
+    const created = await agent(ctx, 'session-extract', 'C:\\workspace')
+    const dispose = ctx.agents.register(created.agent)
+    // Commit the role binding exactly like the first prompt assembly does.
+    renderPrompt(await ctx.systemPrompt.assemble({ agent: created.agent, scope: created.agent }))
+
+    const session = created.agent.session as Session
+    session.append('turn/start', { turn: 1 })
+    session.append('user/message', {
+      id: 'u1', role: 'user', content: [{ type: 'text', text: '我喜欢喝咖啡' }], source: { kind: 'user' },
+    }, { surfaceOp: 'append' })
+    session.append('assistant/message', {
+      turn: 1, step: 1,
+      message: { id: 'a1', role: 'assistant', content: [{ type: 'text', text: '好的，记住了。' }], source: { kind: 'model', provider: 'test', model: 'test' } },
+    }, { surfaceOp: 'append' })
+
+    emitAgentEvent(ctx, created.agent, 'agent/turn-stopping', { turn: 1, signal: new AbortController().signal })
+
+    await waitFor(() => ctx.shioriRole.memory().recall('maintainer').some(item => item.summary.includes('咖啡')))
+    const item = ctx.shioriRole.memory().recall('maintainer').find(entry => entry.summary.includes('咖啡'))
+    assert.equal(item?.kind, 'profile')
+    assert.equal(item?.sourceRef, 'turn:1')
+    assert.equal(item?.extra.category, 'personal_fact')
+    assert.equal(item?.extra.emotional_weight, '4')
+    assert.deepEqual(item?.evidence, [{ kind: 'turn', refs: ['turn:1'], sourceRef: 'session-extract' }])
+
+    dispose()
+    await created.scope.dispose()
+  } finally {
+    restore()
+    await rm(root, { recursive: true, force: true })
+  }
 })

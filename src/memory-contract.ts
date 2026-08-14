@@ -26,6 +26,7 @@ export interface RoleMemory {
   /** Shiori memory_items memory_type, retained alongside the legacy kind alias. */
   readonly memoryType: string
   readonly contentHash: string
+  readonly embedding?: readonly number[]
   readonly extra: Readonly<Record<string, string>>
   readonly kind: string
   readonly domain: RoleMemoryDomain
@@ -59,7 +60,7 @@ export interface RoleMemoryQueryResult {
     readonly engine: 'shiori-role'
     readonly intent: RoleMemoryQueryIntent
     readonly effect: 'stateful' | 'read_only'
-    readonly retrieval: 'deterministic-text'
+    readonly retrieval: 'deterministic-text' | 'hybrid-rrf'
   }
 }
 

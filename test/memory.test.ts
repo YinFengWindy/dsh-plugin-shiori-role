@@ -3,7 +3,7 @@ import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
-import { applyMemoryTools, ShioriMemoryService } from '../src/memory.ts'
+import { applyMemoryTools, extractMemories, ShioriMemoryService } from '../src/memory.ts'
 import { WorkspaceMemoryTable } from '../src/file-memory-table.ts'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -20,6 +20,32 @@ function table() {
     delete: async (key: string) => values.delete(key),
     update: async () => { throw new Error('not used') },
   } as any
+}
+
+const EMBEDDING_CONFIG = { endpoint: 'https://embedding.test/v1', model: 'test-embed' }
+const EXTRACTION_CONFIG = { endpoint: 'https://chat.test/v1', model: 'test-chat' }
+
+function jsonResponse(payload: unknown): Response {
+  return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } })
+}
+
+/** Replace global fetch for the duration of one test. */
+function stubFetch(handler: (url: string, init?: RequestInit) => Response | Promise<Response>): () => void {
+  const original = globalThis.fetch
+  globalThis.fetch = ((input: any, init?: any) => {
+    const url = typeof input === 'string' ? input : String(input)
+    return handler(url, init)
+  }) as typeof fetch
+  return () => { globalThis.fetch = original }
+}
+
+function requestBody(init?: RequestInit): Record<string, unknown> {
+  return JSON.parse(String(init?.body)) as Record<string, unknown>
+}
+
+/** Deterministic theme embedding: coffee-leaning by default, tea otherwise. */
+function themeEmbedding(text: string): number[] {
+  return text.toLocaleLowerCase().includes('tea') ? [0, 1, 0] : [1, 0, 0]
 }
 
 test('keeps structured memories isolated by role and reinforces exact duplicates', async () => {
@@ -156,4 +182,149 @@ test('registers role memory tools and disposes them with the Agent scope', async
 
   await scope.dispose()
   assert.deepEqual(ctx.tools.schemas().map(tool => tool.name), [])
+})
+
+test('recalls through independent vector and keyword lanes fused by RRF', async () => {
+  const restore = stubFetch((url, init) => {
+    if (!url.endsWith('/embeddings')) throw new Error(`unexpected url ${url}`)
+    const input = String(requestBody(init).input ?? '')
+    return jsonResponse({ data: [{ embedding: themeEmbedding(input) }] })
+  })
+  try {
+    const memory = new ShioriMemoryService(table(), { embedding: EMBEDDING_CONFIG })
+    // Older, keyword-hit row with a strong semantic match to the query theme.
+    await memory.memorize('role-a', 'the user loves coffee')
+    // Newer keyword-hit row whose theme differs from the query.
+    await memory.memorize('role-a', 'the user prefers tea')
+    // Semantic-only row: no keyword overlap with the query, still recalled.
+    await memory.memorize('role-a', 'espresso machine')
+
+    const result = await memory.queryAsync({ scope: { roleId: 'role-a' }, text: 'user' })
+    assert.equal(result.trace.retrieval, 'hybrid-rrf')
+    const summaries = result.records.map(record => record.summary)
+    assert.ok(summaries.includes('the user loves coffee'), 'keyword+vector hit ranks in')
+    assert.ok(summaries.includes('espresso machine'), 'vector lane independently recalls semantic rows')
+    assert.ok(summaries.includes('the user prefers tea'), 'keyword lane keeps literal hits')
+    assert.equal(result.records[0]?.summary, 'the user loves coffee')
+  } finally {
+    restore()
+  }
+})
+
+test('persists embeddings into the semantic file layer', async () => {
+  const restore = stubFetch((url, init) => {
+    if (!url.endsWith('/embeddings')) throw new Error(`unexpected url ${url}`)
+    return jsonResponse({ data: [{ embedding: [0.25, 0.5, 0.75] }] })
+  })
+  const workspace = await mkdtemp(join(tmpdir(), 'shiori-role-embedding-'))
+  try {
+    const memory = new ShioriMemoryService(new WorkspaceMemoryTable(workspace), { embedding: EMBEDDING_CONFIG })
+    const saved = await memory.memorize('role-a', 'Embedded and durable.')
+    assert.deepEqual(saved.embedding, [0.25, 0.5, 0.75])
+    const semantic = JSON.parse(await readFile(
+      join(workspace, 'shiori-plugin', 'role', 'role-a', 'memory', 'semantic.json'), 'utf8',
+    )) as Array<{ record: { embedding?: number[] } }>
+    assert.deepEqual(semantic[0]?.record?.embedding, [0.25, 0.5, 0.75])
+    const restarted = new ShioriMemoryService(new WorkspaceMemoryTable(workspace), { embedding: EMBEDDING_CONFIG })
+    assert.deepEqual(restarted.recall('role-a')[0]?.embedding, [0.25, 0.5, 0.75])
+  } finally {
+    restore()
+    await rm(workspace, { recursive: true, force: true })
+  }
+})
+
+test('degrades to deterministic retrieval when the embedding endpoint fails', async () => {
+  const restore = stubFetch(() => { throw new Error('embedding service down') })
+  try {
+    const memory = new ShioriMemoryService(table(), { embedding: EMBEDDING_CONFIG })
+    const saved = await memory.memorize('role-a', 'Survives without an embedding.')
+    assert.equal(saved.embedding, undefined)
+    await memory.memorize('role-a', 'Second memory row.')
+    const result = await memory.queryAsync({ scope: { roleId: 'role-a' }, text: 'second' })
+    assert.equal(result.trace.retrieval, 'deterministic-text')
+    assert.equal(result.records[0]?.summary, 'Second memory row.')
+  } finally {
+    restore()
+  }
+})
+
+test('extracts Shiori-style profile, preference, and procedure memories', async () => {
+  const restore = stubFetch((url, init) => {
+    if (!url.endsWith('/chat/completions')) throw new Error(`unexpected url ${url}`)
+    const body = requestBody(init)
+    assert.equal(body.model, 'test-chat')
+    assert.equal((body.messages as Array<{ role: string }>)[0]?.role, 'system')
+    return jsonResponse({
+      choices: [{ message: { content: `这里有些前导文字\n\`\`\`json\n${JSON.stringify({
+        profile: [{ summary: '你住在上海', category: 'personal_fact', emotional_weight: 0 }],
+        preference: [{ summary: '不喜欢悬疑风格的游戏', emotional_weight: 3 }],
+        procedure: [{ summary: '查菜谱只推荐 20 分钟内的菜式', emotional_weight: 0 }],
+      })}\n\`\`\`` } }],
+    })
+  })
+  try {
+    const items = await extractMemories(EXTRACTION_CONFIG, 'USER: 我住在上海，以后查菜谱只给我 20 分钟能做完的\nASSISTANT: 好的', '- [profile] 现有画像')
+    assert.deepEqual(items, [
+      { summary: '你住在上海', kind: 'profile', category: 'personal_fact', emotionalWeight: 0 },
+      { summary: '不喜欢悬疑风格的游戏', kind: 'preference', emotionalWeight: 3 },
+      { summary: '查菜谱只推荐 20 分钟内的菜式', kind: 'procedure', emotionalWeight: 0 },
+    ])
+  } finally {
+    restore()
+  }
+})
+
+test('extraction tolerates empty or malformed responses', async () => {
+  const restore = stubFetch((url, init) => {
+    if (!url.endsWith('/chat/completions')) throw new Error(`unexpected url ${url}`)
+    const messages = requestBody(init).messages as Array<{ content: string }>
+    const input = messages.map(message => message.content).join('\n')
+    if (input.includes('empty')) return jsonResponse({ choices: [{ message: { content: '这里什么都没有' } }] })
+    if (input.includes('array')) return jsonResponse({ choices: [{ message: { content: '[]' } }] })
+    return jsonResponse({ choices: [{ message: { content: '{"profile": [{"summary": "只有一条"}]}' } }] })
+  })
+  try {
+    assert.deepEqual(await extractMemories(EXTRACTION_CONFIG, 'empty'), [])
+    assert.deepEqual(await extractMemories(EXTRACTION_CONFIG, 'array'), [])
+    assert.deepEqual(await extractMemories(EXTRACTION_CONFIG, 'object'), [
+      { summary: '只有一条', kind: 'profile' },
+    ])
+  } finally {
+    restore()
+  }
+})
+
+test('saveExtracted persists candidates with Shiori extra fields and reinforces duplicates', async () => {
+  const memory = new ShioriMemoryService(table())
+  const first = await memory.saveExtracted(
+    { roleId: 'role-a', sessionKey: 'session-a' },
+    'turn:1',
+    [
+      { summary: '你住在上海', kind: 'profile', category: 'personal_fact', happenedAt: '2026-08-14T00:00:00Z', emotionalWeight: 7 },
+      { summary: '查菜谱只推荐 20 分钟内的菜式', kind: 'procedure', toolRequirement: 'web_search', steps: ['搜菜谱', '过滤时长'] },
+      { summary: '', kind: 'profile' },
+    ],
+    [{ kind: 'turn', refs: ['turn:1'], sourceRef: 'session-a' }],
+  )
+  assert.equal(first.length, 2)
+  const profile = memory.recall('role-a').find(item => item.kind === 'profile')
+  assert.ok(profile)
+  assert.equal(profile.sourceRef, 'turn:1')
+  assert.equal(profile.happenedAt, '2026-08-14T00:00:00Z')
+  assert.equal(profile.extra.emotional_weight, '7')
+  assert.equal(profile.extra.category, 'personal_fact')
+  assert.deepEqual(profile.evidence, [{ kind: 'turn', refs: ['turn:1'], sourceRef: 'session-a' }])
+
+  const procedure = memory.recall('role-a').find(item => item.kind === 'procedure')
+  assert.equal(procedure?.extra.tool_requirement, 'web_search')
+  assert.deepEqual(JSON.parse(procedure?.extra.steps ?? '[]'), ['搜菜谱', '过滤时长'])
+
+  const reinforced = await memory.saveExtracted(
+    { roleId: 'role-a', sessionKey: 'session-a' },
+    'turn:2',
+    [{ summary: '你住在上海', kind: 'profile' }],
+  )
+  assert.equal(reinforced[0]?.status, 'reinforced')
+  assert.equal(reinforced[0]?.item?.id, profile.id)
+  assert.equal(reinforced[0]?.item?.reinforcementCount, 1)
 })

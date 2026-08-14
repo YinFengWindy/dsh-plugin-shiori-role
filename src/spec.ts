@@ -88,6 +88,7 @@ export const roleMemoryRecord = z.object({
   /** Canonical Shiori memory_items fields. Legacy fields remain readable. */
   summary: z.string().optional(),
   contentHash: z.string().default(''),
+  embedding: z.array(z.number()).optional(),
   extra: z.record(z.string(), z.string()).default({}),
   content: z.string().default(''),
   kind: z.string().default('fact'),
