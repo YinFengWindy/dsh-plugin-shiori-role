@@ -15,6 +15,10 @@ import type {
 } from './memory-contract.ts'
 import type { StoredRoleMemoryRecord } from './spec.ts'
 
+interface MarkdownMemoryTable {
+  readMarkdown(roleId: string): string
+}
+
 const MEMORY_OUTPUT = {
   schema: { type: 'json' as const },
   render: (_args: unknown, value: unknown) => [{
@@ -229,6 +233,10 @@ export class ShioriMemoryService {
 
   /** Build the model-facing current-memory snapshot for one bound role. */
   context(scope: RoleMemoryScope, limit = 8): string {
+    const markdown = 'readMarkdown' in this.table
+      ? (this.table as KvTable<string, StoredRoleMemoryRecord> & MarkdownMemoryTable).readMarkdown(scope.roleId).trim()
+      : ''
+    if (markdown) return `## Long-term Memory\n${markdown}`
     return this.query({ scope, intent: 'context', effect: 'read_only', limit }).textBlock
   }
 

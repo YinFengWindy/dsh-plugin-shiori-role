@@ -105,15 +105,22 @@ test('stores Shiori memory_items metadata and removes rows by source reference',
   assert.equal(memory.query({ scope: { roleId: 'role-a' } }).records.length, 0)
 })
 
-test('persists workspace memory below shiori-plugin/role/<role>/memory', async () => {
+test('persists semantic and Markdown layers below shiori-plugin/role/<role>/memory', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'shiori-role-memory-'))
   try {
     const first = new ShioriMemoryService(new WorkspaceMemoryTable(workspace))
     const saved = await first.memorize('role-a', 'Survives a service restart.')
-    const path = join(workspace, 'shiori-plugin', 'role', 'role-a', 'memory', 'memory.json')
-    assert.match(await readFile(path, 'utf8'), /Survives a service restart/)
+    const memoryDir = join(workspace, 'shiori-plugin', 'role', 'role-a', 'memory')
+    assert.match(await readFile(join(memoryDir, 'semantic.json'), 'utf8'), /Survives a service restart/)
+    assert.match(await readFile(join(memoryDir, 'MEMORY.md'), 'utf8'), /Survives a service restart/)
+    assert.match(await readFile(join(memoryDir, 'SELF.md'), 'utf8'), /# 我是谁/)
+    const markdownPath = join(memoryDir, 'MEMORY.md')
+    const currentMarkdown = await readFile(markdownPath, 'utf8')
+    await import('node:fs/promises').then(fs => fs.writeFile(markdownPath, `${currentMarkdown}\n## 手工补充\n- 不应被覆盖\n`, 'utf8'))
+    await first.memorize('role-a', 'Second semantic fact.')
+    assert.match(await readFile(markdownPath, 'utf8'), /不应被覆盖/)
     const restarted = new ShioriMemoryService(new WorkspaceMemoryTable(workspace))
-    assert.equal(restarted.recall('role-a')[0]?.id, saved.id)
+    assert.equal(restarted.recall('role-a').find(item => item.summary === saved.summary)?.id, saved.id)
   } finally {
     await rm(workspace, { recursive: true, force: true })
   }
@@ -126,6 +133,7 @@ test('shares one role memory file across independent DSH workspace services', as
     await first.memorize('role-a', 'Shared by workspace one and two.')
     const second = new ShioriMemoryService(new WorkspaceMemoryTable(root))
     assert.equal(second.recall('role-a')[0]?.summary, 'Shared by workspace one and two.')
+    assert.match(second.context({ roleId: 'role-a' }), /# 我的长期记忆/)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

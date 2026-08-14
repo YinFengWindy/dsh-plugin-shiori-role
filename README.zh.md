@@ -52,7 +52,7 @@ dependencies:
 
 ## 角色记忆
 
-每个角色拥有隔离的持久记忆作用域。记录会保存到全局 DSH 数据根目录 `$DSH_HOME/shiori-plugin/role/<role-id>/memory/memory.json`，所有 DSH workspace 共享同一份角色记忆；记录采用 Shiori `memory_items` 的字段语义：`summary`、`memoryType`、`contentHash`、结构化 `extra` 元数据、`sourceRef`、`happenedAt`、`status`、强化次数、持久 id 和时间戳；role/session/channel/chat scope 会随记录保存。跨角色读取与删除会被拒绝，也支持按来源引用批量清理；active 记忆会注入 Agent 的 System Prompt 上下文。
+每个角色拥有隔离的持久记忆作用域，并由所有 DSH workspace 共享。全局目录 `$DSH_HOME/shiori-plugin/role/<role-id>/memory/` 包含同步的两层存储：`semantic.json` 保存 Shiori 风格的结构化记录，负责检索、去重、作用域、状态和强化；`MEMORY.md` 是模型实际读取且方便人工编辑的长期记忆文档。目录中还会按 Shiori 角色记忆布局初始化 `SELF.md`、`HISTORY.md`、`RECENT_CONTEXT.md` 和 `PENDING.md`。语义写入只同步 `MEMORY.md` 中带标记的自动区块，不覆盖区块外人工编写的 Markdown。
 
 当前版本不宣称与 Shiori `default_memory` 完全等价。现已实现确定性的大小写不敏感文本检索、精确重复强化、显式记忆工具和 prompt 注入；embedding、混合检索与 reranking、回合后自动抽取、记忆巩固和后台 ingest 尚未实现。
 

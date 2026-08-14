@@ -52,7 +52,7 @@ The selected role controls the composer avatar and role name. Its portrait can i
 
 ## Role Memory
 
-Each role owns an isolated durable memory scope. Records are stored in the global DSH data root at `$DSH_HOME/shiori-plugin/role/<role-id>/memory/memory.json` (shared by every DSH workspace) and follow the Shiori `memory_items` shape: `summary`, `memoryType`, `contentHash`, structured `extra` metadata, `sourceRef`, `happenedAt`, `status`, reinforcement count, durable ids, and timestamps. Role/session/channel/chat scope is persisted with the record. Cross-role reads and deletes are rejected; source references can be removed as a group, and active memories are rendered into the Agent's System Prompt context.
+Each role owns an isolated durable memory scope shared by every DSH workspace. The global `$DSH_HOME/shiori-plugin/role/<role-id>/memory/` directory has two synchronized layers: `semantic.json` stores Shiori-shaped structured records for query, deduplication, scope, status, and reinforcement; `MEMORY.md` is the model-facing and human-readable long-term document. `SELF.md`, `HISTORY.md`, `RECENT_CONTEXT.md`, and `PENDING.md` are initialized beside it using Shiori's role-memory document layout. Semantic writes update a marked block in `MEMORY.md` without replacing manually authored Markdown outside that block.
 
 This version intentionally does not claim full Shiori `default_memory` parity. It provides deterministic case-insensitive text retrieval, exact-match reinforcement, explicit memory tools, and prompt injection. Embeddings, hybrid retrieval/reranking, automatic post-turn extraction, consolidation, and background ingestion are not implemented yet.
 
