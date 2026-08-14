@@ -10,17 +10,47 @@
       "types": "./lib/types/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./remote": {
+      "types": "./lib/types/remote.d.ts",
+      "default": "./lib/remote.js"
+    },
+    "./typert": {
+      "types": "./lib/types/typert.d.ts",
+      "default": "./lib/typert.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "lib/index.js",
+    "lib/client.js",
+    "lib/remote.js",
+    "lib/typert.js",
     "lib/types/**/*.d.ts"
   ],
   "scripts": {
+    "build": "tsc --project tsconfig.json && tsdown",
     "test": "node --import tsx/esm --test test/**/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "license": "MIT",
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings-plugins",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web"
+    }
+  },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
     "@deepseek-ai/dsh-agent": "*",
@@ -29,6 +59,7 @@
     "@deepseek-ai/dsh-storage-domain": "*",
     "@deepseek-ai/dsh-system-prompt": "*",
     "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-typert-protocol": "*",
     "@deepseek-ai/dsh-workspace": "*"
   },
   "devDependencies": {
@@ -39,8 +70,18 @@
     "@deepseek-ai/dsh-storage-domain": "*",
     "@deepseek-ai/dsh-system-prompt": "*",
     "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-typert-protocol": "*",
+    "@deepseek-ai/dsh-api-remotes": "*",
+    "@deepseek-ai/dsh-client-runtime": "*",
+    "@deepseek-ai/dsh-client-locale": "*",
+    "@deepseek-ai/dsh-client-ui-primitives": "*",
+    "@deepseek-ai/dsh-client-ui-settings-plugins": "*",
+    "@deepseek-ai/dsh-client-ui-settings": "*",
+    "@deepseek-ai/dsh-client-ui-slots": "*",
+    "@types/react": "~18.3.1",
+    "react": "^18.2.0",
+    "tsdown": "^0.22.2",
     "@deepseek-ai/dsh-workspace": "*",
-    "zod": "^4.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0"
   }

@@ -4,46 +4,40 @@
 
 ## 范围
 
-本仓库提供 Cordis 插件，让一个工作区为之后创建的 session 选择一个默认角色。Agent 创建时固定角色；修改工作区当前角色不会热切换正在运行的 Agent。
+这是一个 Cordis service 插件，让工作区为之后创建的 session 选择默认角色。Agent 发布时固定角色；修改工作区角色不会热切换正在运行的 Agent。Agent preset 继续负责能力组合。
 
-角色插件负责：
+## 配置与 UI
 
-- 角色身份和行为 prompt；
-- 角色作用域内的记忆服务和工具；
-- 角色生命周期和释放；
-- 与 session 关联的持久角色绑定。
-
-Agent preset 继续负责 Agent 的能力组合。工作区角色和 Agent preset 是两个独立选择。
-
-## 第一阶段
-
-1. 发现并校验角色定义。
-2. 保存每个工作区的当前角色。
-3. 创建或恢复 Agent 时绑定角色。
-4. 在角色 sidecar domain 中持久化 session 的角色绑定。
-5. 证明切换工作区角色只影响之后创建的 session。
-
-Shiori 现有 Python runtime 是产品行为的迁移来源，但本仓库使用 deepseek-harness 的原生 TypeScript/ESM Cordis package 实现。
-
-## 包入口
-
-包导出名为 `shiori-role` 的 Cordis 函数插件，可以在 Agent scope 中挂载一个角色定义：
+在宿主边界配置角色目录：
 
 ```yaml
-- id: role-shiori-maintainer
+- id: shiori-role
   name: '@deepseek-ai/dsh-plugin-shiori-role'
   config:
-    id: shiori-maintainer
-    name: Shiori Maintainer
-    prompt: 你是这个工作区的 Shiori 维护者。
+    roles:
+      - id: maintainer
+        name: Shiori Maintainer
+        prompt: 你是这个工作区的 Shiori 维护者。
 ```
 
-角色 service 会在自己的 durable domain 中保存工作区默认角色和 session 固化角色。本插件不会向 harness core 添加未经登记的自定义 session event；模型可见的角色 prompt 仍通过 request header 重建。
+Harness 的 Settings -> Plugins -> 角色页会显示工作区选择器和角色按钮。宿主 Remote 命名空间是 `remote.shioriRole`，提供 `snapshot(workspaceId)` 和 `select(workspaceId, roleId)`；客户端贡献由插件自己挂载，并随插件释放。
 
-## 领域层
+## 角色绑定
 
-`WorkspaceRoleRegistry` 管理经过校验的角色目录和工作区当前角色。`ShioriRoleService` 在 `shiori-role` storage domain 中同时保存工作区默认值和不可变的 session 角色绑定。当前角色只是之后创建 Agent 的默认值；Agent 创建边界会固化解析出的 `roleId`，已有 Agent 不会重新读取工作区默认值。
+`WorkspaceRoleRegistry` 管理经过校验的角色目录和工作区默认值。`ShioriRoleService` 在 `shiori_role` domain 中保存工作区默认角色和不可变的 session 角色绑定。Agent 发布时，插件根据 session 的 `cwd` 解析工作区，把 persona 和记忆工具挂入 Agent scope，并在第一次 prompt assemble 继续前持久化绑定。恢复 session 时始终使用 durable binding，即使工作区默认角色已经改变。
+
+本插件不会向 Harness core 添加未经登记的自定义 session event；模型可见的角色 prompt 仍可通过记录的 request header 重建。
 
 ## 角色记忆
 
-每个已绑定角色在同一个 `shiori_role` domain 中拥有隔离的持久记忆表。Agent 作用域会注册 `memorize`（保存事实）、`recall_memory`（读取最近记忆并支持文本过滤）和 `forget_memory`（按 id 删除）三个原生工具，跨角色读取和删除会被拒绝。第一阶段使用确定性的文本匹配，不引入 embedding。工具在角色绑定后注册，并随 Agent scope 释放；宿主需要同时加载 `@deepseek-ai/dsh-tools`、system-prompt 和 storage service。
+每个已绑定角色在同一个 domain 中拥有隔离的持久记忆表。公开契约保留 Shiori 结构化记忆的形状：scope、kind、domain、来源引用、evidence、status、持久化 id 和强化次数。Agent 作用域注册 `memorize`（保存或强化事实）、`recall_memory`（按文本、kind、domain、limit 查询 active 记忆）和 `forget_memory`（按 id 删除）三个原生工具，跨角色读取和删除会被拒绝；当前记忆块会带着记忆 id 注入 Agent prompt。
+
+这一版原生插件不宣称与 Shiori `default_memory` 完全等价：检索使用确定性的大小写不敏感子串匹配和精确重复强化，暂未实现 embedding、语义 reranking、自动回合后抽取和 ingest。工具在角色绑定后注册，并随 Agent scope 释放。
+
+## 开发验证
+
+```powershell
+D:\Coding\deepseek-harness\node_modules\.bin\tsc.cmd --noEmit --project tsconfig.json
+node --import file:///D:/Coding/deepseek-harness/node_modules/tsx/dist/esm/index.mjs --test test/*.test.ts
+D:\Coding\deepseek-harness\node_modules\.bin\tsdown.cmd --config tsdown.config.ts
+```

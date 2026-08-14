@@ -18,19 +18,80 @@ function table() {
   } as any
 }
 
-test('role memory is isolated and tools are scoped to the Agent context', async () => {
+test('keeps structured memories isolated by role and reinforces exact duplicates', async () => {
   const memory = new ShioriMemoryService(table())
-  const saved = await memory.memorize('role-a', 'Only role A knows this.')
-  assert.equal(memory.recall('role-b').length, 0)
-  assert.equal(memory.recall('role-a')[0]?.content, 'Only role A knows this.')
-  assert.equal(await memory.forget('role-b', `${saved.roleId}:missing`), false)
+  const first = await memory.mutate({
+    kind: 'remember',
+    scope: { roleId: 'role-a', sessionKey: 'session-a' },
+    summary: 'Only role A knows this.',
+    memoryKind: 'preference',
+    memoryDomain: 'relationship',
+    sourceRef: 'turn:1',
+    evidence: [{ kind: 'turn', refs: ['turn:1'], sourceRef: 'chat' }],
+  })
 
+  assert.equal(first.status, 'new')
+  assert.ok(first.item?.id.startsWith('role-a:'))
+  assert.equal(first.item?.kind, 'preference')
+  assert.equal(first.item?.domain, 'relationship')
+  assert.equal(first.item?.sourceRef, 'turn:1')
+  assert.deepEqual(first.item?.scope, { roleId: 'role-a', sessionKey: 'session-a' })
+  assert.deepEqual(first.item?.evidence, [{ kind: 'turn', refs: ['turn:1'], sourceRef: 'chat' }])
+  assert.equal(memory.query({ scope: { roleId: 'role-b' } }).records.length, 0)
+
+  const reinforced = await memory.mutate({
+    kind: 'remember',
+    scope: { roleId: 'role-a' },
+    summary: 'only role a knows this.',
+    memoryKind: 'preference',
+    memoryDomain: 'relationship',
+  })
+  assert.equal(reinforced.status, 'reinforced')
+  assert.equal(reinforced.item?.id, first.item?.id)
+  assert.equal(reinforced.item?.reinforcementCount, 1)
+
+  const query = memory.query({ scope: { roleId: 'role-a' }, text: 'ROLE A' })
+  assert.equal(query.records[0]?.summary, 'Only role A knows this.')
+  assert.match(query.textBlock, new RegExp(`\\[${first.item?.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\]`))
+})
+
+test('reports affected and missing ids without allowing cross-role deletion', async () => {
+  const memory = new ShioriMemoryService(table())
+  const saved = await memory.memorize('role-a', 'A durable fact.')
+
+  const denied = await memory.mutate({ kind: 'forget', scope: { roleId: 'role-b' }, ids: [saved.id] })
+  assert.deepEqual(denied, {
+    accepted: false,
+    status: 'not_found',
+    affectedIds: [],
+    missingIds: [saved.id],
+  })
+
+  const forgotten = await memory.mutate({ kind: 'forget', scope: { roleId: 'role-a' }, ids: [saved.id, 'missing'] })
+  assert.deepEqual(forgotten, {
+    accepted: true,
+    status: 'forgotten',
+    affectedIds: [saved.id],
+    missingIds: ['missing'],
+  })
+  assert.equal(memory.recall('role-a').length, 0)
+})
+
+test('registers role memory tools and disposes them with the Agent scope', async () => {
+  const memory = new ShioriMemoryService(table())
+  await memory.memorize('role-a', 'Context-visible memory.')
   const ctx = new Context()
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
-  const plugin = Object.assign((inner: Context) => applyMemoryTools(inner, memory, 'role-a'), { inject: ['systemPrompt', 'tools'] })
+  const plugin = Object.assign(
+    (inner: Context) => applyMemoryTools(inner, memory, { roleId: 'role-a', sessionKey: 'session-a' }),
+    { inject: ['systemPrompt', 'tools'] },
+  )
   const scope = await ctx.plugin(plugin)
+
   assert.deepEqual(ctx.tools.schemas().map(tool => tool.name), ['recall_memory', 'memorize', 'forget_memory'])
+  assert.match(memory.context({ roleId: 'role-a' }), /Context-visible memory/)
+
   await scope.dispose()
   assert.deepEqual(ctx.tools.schemas().map(tool => tool.name), [])
 })

@@ -3,7 +3,18 @@
 export { apply, inject, name, type Config } from './role-plugin.ts'
 import { ShioriRoleService } from './service.ts'
 
-export type { ShioriRoleDefinition } from './types.ts'
+export type { ShioriRoleDefinition, ShioriRoleView, WorkspaceRoleSnapshot } from './types.ts'
+export type {
+  RoleMemory,
+  RoleMemoryDomain,
+  RoleMemoryEvidence,
+  RoleMemoryMutation,
+  RoleMemoryMutationResult,
+  RoleMemoryQuery,
+  RoleMemoryQueryIntent,
+  RoleMemoryQueryResult,
+  RoleMemoryScope,
+} from './memory-contract.ts'
 export { ShioriRoleService } from './service.ts'
 export {
   shioriRoleDomainSpec,
@@ -11,7 +22,7 @@ export {
   workspaceRoleRecord,
   type SessionRoleRecord,
   type WorkspaceRoleRecord,
-  type RoleMemoryRecord,
+  type StoredRoleMemoryRecord,
 } from './spec.ts'
 export { ShioriMemoryService, applyMemoryTools } from './memory.ts'
 export {
