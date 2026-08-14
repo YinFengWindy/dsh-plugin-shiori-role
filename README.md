@@ -43,3 +43,7 @@ The role service persists workspace defaults and session bindings in its own dur
 ## Domain Layer
 
 `WorkspaceRoleRegistry` owns the validated role catalog and each workspace's active role selection. `ShioriRoleService` stores both workspace defaults and immutable session bindings in the `shiori-role` storage domain. The active role is only a default for future Agent creation; the Agent-creation boundary persists the resolved `roleId`, and existing Agents must not reread the workspace default.
+
+## Role Memory
+
+Each bound role gets an isolated durable memory table in the same `shiori_role` domain. The native Agent-scope tools are `memorize` (save a fact), `recall_memory` (list recent facts with optional text filtering), and `forget_memory` (delete by id). Cross-role reads and deletes are rejected by construction. The first slice uses deterministic text matching rather than embeddings. Tools are registered after role binding and disposed with the Agent scope; hosts must load `@deepseek-ai/dsh-tools` with the normal system-prompt and storage services.

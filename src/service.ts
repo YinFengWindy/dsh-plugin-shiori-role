@@ -4,10 +4,11 @@ import { scopeOf } from '@deepseek-ai/dsh-scope'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
 import type { SessionId } from '@deepseek-ai/dsh-session'
-import { shioriRoleDomainSpec, type SessionRoleRecord, type WorkspaceRoleRecord } from './spec.ts'
+import { shioriRoleDomainSpec, type RoleMemoryRecord, type SessionRoleRecord, type WorkspaceRoleRecord } from './spec.ts'
 import { apply as applyRolePlugin, type Config as RolePluginConfig } from './role-plugin.ts'
 import type { ShioriRoleDefinition } from './types.ts'
 import { DuplicateRoleError, UnknownRoleError, WorkspaceRoleRegistry } from './registry.ts'
+import { applyMemoryTools, ShioriMemoryService } from './memory.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -30,6 +31,8 @@ export class ShioriRoleService extends Service {
   private domain?: Domain<typeof shioriRoleDomainSpec>
   private table?: KvTable<string, WorkspaceRoleRecord>
   private sessionTable?: KvTable<SessionId, SessionRoleRecord>
+  private memoryTable?: KvTable<string, RoleMemoryRecord>
+  private memoryService?: ShioriMemoryService
   private readonly catalog: WorkspaceRoleRegistry
 
   constructor(ctx: Context, readonly config: Config) {
@@ -47,6 +50,8 @@ export class ShioriRoleService extends Service {
     this.ctx.effect(() => () => { void this.domain?.close() }, 'shioriRole.domainClose')
     this.table = this.domain.table('workspace_roles')
     this.sessionTable = this.domain.table('session_roles')
+    this.memoryTable = this.domain.table('memories')
+    this.memoryService = new ShioriMemoryService(this.memoryTable)
   }
 
   /** List the configured role definitions. */
@@ -95,7 +100,17 @@ export class ShioriRoleService extends Service {
       name: resolved.name,
       prompt: resolved.prompt,
     } satisfies RolePluginConfig)
+    const memoryPlugin = Object.assign(
+      (inner: Context) => applyMemoryTools(inner, this.requireMemoryService(), resolved.id),
+      { inject: ['systemPrompt', 'tools'] },
+    )
+    await agentCtx.plugin(memoryPlugin)
     return resolved
+  }
+
+  /** Access the role-scoped memory facade after service initialization. */
+  memory(): ShioriMemoryService {
+    return this.requireMemoryService()
   }
 
   /** Resolve a workspace role from the session's canonical working directory. */
@@ -114,6 +129,11 @@ export class ShioriRoleService extends Service {
   private requireSessionTable(): KvTable<SessionId, SessionRoleRecord> {
     if (this.sessionTable === undefined) throw new Error('shiori-role: service is not started')
     return this.sessionTable
+  }
+
+  private requireMemoryService(): ShioriMemoryService {
+    if (this.memoryService === undefined) throw new Error('shiori-role: service is not started')
+    return this.memoryService
   }
 }
 

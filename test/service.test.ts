@@ -3,6 +3,7 @@ import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import { createScope, scopeOf, type Scope } from '@deepseek-ai/dsh-scope'
 import SystemPrompt, { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
+import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { ShioriRoleService } from '../src/service.ts'
 
 function memoryDomain() {
@@ -37,6 +38,7 @@ test('persists a workspace default and binds it once to a new Agent scope', asyn
     resolveByPath: async () => ({ id: 'workspace-a' }),
   } as never)
   await ctx.plugin(SystemPrompt, { persona: 'Deployment identity.' })
+  await ctx.plugin(ToolRuntime)
   await ctx.plugin(ShioriRoleService, {
     roles: [{ id: 'maintainer', name: 'Maintainer', prompt: 'You are the Shiori maintainer.' }],
   })

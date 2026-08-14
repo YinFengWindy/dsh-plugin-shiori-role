@@ -26,6 +26,7 @@
       "@deepseek-ai/dsh-scope": ["../deepseek-harness/packages/core/scope/lib/types"],
       "@deepseek-ai/dsh-storage-domain": ["../deepseek-harness/packages/storage/storage-domain/lib/types"],
       "@deepseek-ai/dsh-system-prompt": ["../deepseek-harness/packages/core/system-prompt/lib/types"],
+      "@deepseek-ai/dsh-tools": ["../deepseek-harness/packages/core/tools/lib/types"],
       "@deepseek-ai/dsh-workspace": ["../deepseek-harness/packages/workspace/workspace/lib/types"],
       "zod": ["../deepseek-harness/node_modules/.pnpm/zod@4.4.3/node_modules/zod"]
     }

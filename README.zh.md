@@ -43,3 +43,7 @@ Shiori 现有 Python runtime 是产品行为的迁移来源，但本仓库使用
 ## 领域层
 
 `WorkspaceRoleRegistry` 管理经过校验的角色目录和工作区当前角色。`ShioriRoleService` 在 `shiori-role` storage domain 中同时保存工作区默认值和不可变的 session 角色绑定。当前角色只是之后创建 Agent 的默认值；Agent 创建边界会固化解析出的 `roleId`，已有 Agent 不会重新读取工作区默认值。
+
+## 角色记忆
+
+每个已绑定角色在同一个 `shiori_role` domain 中拥有隔离的持久记忆表。Agent 作用域会注册 `memorize`（保存事实）、`recall_memory`（读取最近记忆并支持文本过滤）和 `forget_memory`（按 id 删除）三个原生工具，跨角色读取和删除会被拒绝。第一阶段使用确定性的文本匹配，不引入 embedding。工具在角色绑定后注册，并随 Agent scope 释放；宿主需要同时加载 `@deepseek-ai/dsh-tools`、system-prompt 和 storage service。

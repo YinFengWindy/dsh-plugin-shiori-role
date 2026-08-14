@@ -28,6 +28,7 @@
     "@deepseek-ai/dsh-scope": "*",
     "@deepseek-ai/dsh-storage-domain": "*",
     "@deepseek-ai/dsh-system-prompt": "*",
+    "@deepseek-ai/dsh-tools": "*",
     "@deepseek-ai/dsh-workspace": "*"
   },
   "devDependencies": {
@@ -37,6 +38,7 @@
     "@deepseek-ai/dsh-scope": "*",
     "@deepseek-ai/dsh-storage-domain": "*",
     "@deepseek-ai/dsh-system-prompt": "*",
+    "@deepseek-ai/dsh-tools": "*",
     "@deepseek-ai/dsh-workspace": "*",
     "zod": "^4.0.0",
     "tsx": "^4.0.0",

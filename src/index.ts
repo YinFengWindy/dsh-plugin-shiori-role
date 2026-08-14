@@ -11,7 +11,9 @@ export {
   workspaceRoleRecord,
   type SessionRoleRecord,
   type WorkspaceRoleRecord,
+  type RoleMemoryRecord,
 } from './spec.ts'
+export { ShioriMemoryService, applyMemoryTools } from './memory.ts'
 export {
   DuplicateRoleError,
   MemoryRoleSelectionStore,

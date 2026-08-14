@@ -20,6 +20,17 @@ export const sessionRoleRecord = z.object({
 /** Inferred durable session role record. */
 export type SessionRoleRecord = z.infer<typeof sessionRoleRecord>
 
+/** Durable memory entry owned by one role. */
+export const roleMemoryRecord = z.object({
+  roleId: z.string(),
+  content: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+/** Inferred durable role memory record. */
+export type RoleMemoryRecord = z.infer<typeof roleMemoryRecord>
+
 /** Domain storing the active role selected for each workspace. */
 export const shioriRoleDomainSpec = defineDomain({
   name: 'shiori_role',
@@ -27,5 +38,6 @@ export const shioriRoleDomainSpec = defineDomain({
   tables: {
     workspace_roles: domainTable<string, WorkspaceRoleRecord>(workspaceRoleRecord),
     session_roles: domainTable<SessionId, SessionRoleRecord>(sessionRoleRecord),
+    memories: domainTable<string, RoleMemoryRecord>(roleMemoryRecord),
   },
 })
