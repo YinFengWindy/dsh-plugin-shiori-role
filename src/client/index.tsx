@@ -8,6 +8,7 @@ import remote from '../remote.ts'
 import type { RoleClientApi } from './api.ts'
 import { RoleSelector } from './RoleSelector.tsx'
 import { RoleSettings, type RoleLocaleKey } from './RoleSettings.tsx'
+import { MemorySettings, type MemoryLocaleKey } from './MemorySettings.tsx'
 import { ROLE_STYLES } from './styles.ts'
 
 const NS = 'shiori.role'
@@ -15,17 +16,28 @@ const NS = 'shiori.role'
 const dictionaries = {
   en: {
     tab: 'Roles', loading: 'Loading...', create: 'Create role', createTitle: 'Create role', editTitle: 'Edit role', close: 'Close', delete: 'Delete', cancel: 'Cancel', save: 'Save', name: 'Name', introduction: 'Introduction', systemPrompt: 'System Prompt', avatar: 'Avatar', portrait: 'Standing illustration', assets: 'Asset library', fixedRole: 'This session role is fixed', chooseRole: 'Choose role',
-    memory: 'Memory', memoryHint: 'Semantic memory endpoints. Embedding powers vector retrieval and automatic supersede; extraction powers post-turn memory extraction. Leave an endpoint empty to disable it.', embedding: 'Embedding', extraction: 'Extraction', endpoint: 'Endpoint', model: 'Model', apiKey: 'API Key', dbPath: 'Database path (optional)', saveMemory: 'Save memory config', memorySaved: 'Saved and applied.', memoryError: 'Failed to save memory config.',
+    memory: 'Memory', memoryHint: 'Semantic memory endpoints. Embedding powers vector retrieval and automatic supersede; extraction powers post-turn memory extraction. Leave an endpoint empty to disable it.', embedding: 'Embedding', extraction: 'Extraction', endpoint: 'Endpoint', model: 'Model', apiKey: 'API Key', saveMemory: 'Save memory config', memorySaved: 'Saved and applied.', memoryError: 'Failed to save memory config.',
   },
   zh: {
     tab: '角色', loading: '加载中...', create: '创建角色', createTitle: '创建角色', editTitle: '编辑角色', close: '关闭', delete: '删除', cancel: '取消', save: '保存', name: '名称', introduction: '简介', systemPrompt: 'System Prompt', avatar: '头像', portrait: '立绘', assets: '素材库', fixedRole: '当前会话角色已固定', chooseRole: '选择角色',
-    memory: '记忆', memoryHint: '语义记忆层端点：embedding 用于向量检索与自动去重退休，extraction 用于回合后抽取。留空即禁用。', embedding: 'Embedding 端点', extraction: '抽取端点', endpoint: 'Endpoint', model: 'Model', apiKey: 'API Key', dbPath: '数据库路径（可选）', saveMemory: '保存记忆配置', memorySaved: '已保存并立即生效。', memoryError: '记忆配置保存失败。',
+    memory: '记忆', memoryHint: '语义记忆层端点：embedding 用于向量检索与自动去重退休，extraction 用于回合后抽取。留空即禁用。', embedding: 'Embedding 端点', extraction: '抽取端点', endpoint: 'Endpoint', model: 'Model', apiKey: 'API Key', saveMemory: '保存记忆配置', memorySaved: '已保存并立即生效。', memoryError: '记忆配置保存失败。',
   },
 }
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
     'shiori.role': keyof typeof dictionaries.en
+  }
+}
+
+/** settings.plugin.item 卡片 slot（宿主 ui-settings-plugins 的 ConfigurablePluginsTab 渲染）。 */
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotMap {
+    'settings.plugin.item': {
+      kind: 'list'
+      scope: 'root'
+      owner: { children?: never }
+    }
   }
 }
 
@@ -75,7 +87,8 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     },
   }
   const disposeLocale = ctx.locale.register(NS, dictionaries)
-  const t = ctx.locale.bind(NS) as (key: RoleLocaleKey) => string
+  const roleText = ctx.locale.bind(NS) as (key: RoleLocaleKey) => string
+  const memoryText = ctx.locale.bind(NS) as (key: MemoryLocaleKey) => string
   const style = document.createElement('style')
   style.dataset.shioriRole = 'styles'
   style.textContent = ROLE_STYLES
@@ -85,20 +98,28 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     name: 'settings.plugins.tab',
     id: 'shiori-roles',
     order: 20,
-    label: () => t('tab'),
+    label: () => roleText('tab'),
     locale: NS,
-    inject: () => ({ api, t }),
+    inject: () => ({ api, t: roleText }),
   }, RoleSettings))
+  const disposeMemoryCard = await ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
+    name: 'settings.plugin.item',
+    id: 'shiori-role-memory',
+    order: 10,
+    locale: NS,
+    inject: () => ({ api, t: memoryText }),
+  }, MemorySettings))
   const disposeSelector = await ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
     name: 'conversation.input.left',
     id: 'shiori-role-selector',
     order: 40,
     locale: NS,
-    inject: () => ({ api, ctx, t }),
+    inject: () => ({ api, ctx, t: roleText }),
   }, RoleSelector))
 
   return async () => {
     disposeSelector()
+    disposeMemoryCard()
     disposeTab()
     style.remove()
     document.documentElement.classList.remove('shiori-role-theme')

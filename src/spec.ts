@@ -117,7 +117,6 @@ const memoryEndpointConfig = z.object({
 export const memoryConfigRecord = z.object({
   embedding: memoryEndpointConfig.optional(),
   extraction: memoryEndpointConfig.optional(),
-  dbPath: z.string().optional(),
   updatedAt: z.string(),
 })
 

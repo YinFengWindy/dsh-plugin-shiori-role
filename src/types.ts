@@ -89,7 +89,6 @@ export interface MemoryEndpointConfig {
 export interface MemoryConfigSnapshot {
   readonly embedding?: MemoryEndpointConfig
   readonly extraction?: MemoryEndpointConfig
-  readonly dbPath?: string
   readonly updatedAt?: string
 }
 
@@ -97,5 +96,4 @@ export interface MemoryConfigSnapshot {
 export interface SaveMemoryConfigInput {
   readonly embedding?: MemoryEndpointConfig
   readonly extraction?: MemoryEndpointConfig
-  readonly dbPath?: string
 }

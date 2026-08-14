@@ -461,7 +461,6 @@ test('persists memory configuration and hot-applies it to the engine', async () 
     const cleared = await ctx.shioriRole.saveMemoryConfig({})
     assert.equal(cleared.embedding, undefined)
     assert.equal(cleared.extraction, undefined)
-    assert.equal(cleared.dbPath, undefined)
   } finally {
     if (serviceFiber !== undefined) await serviceFiber.dispose()
     await rm(root, { recursive: true, force: true })

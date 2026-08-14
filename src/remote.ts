@@ -89,7 +89,6 @@ const memoryEndpointSchema = z.object({
 const memoryConfigSnapshotSchema = z.object({
   embedding: memoryEndpointSchema.optional(),
   extraction: memoryEndpointSchema.optional(),
-  dbPath: z.string().optional(),
   updatedAt: z.string().optional(),
 })
 const saveMemoryConfigSchema = memoryConfigSnapshotSchema.omit({ updatedAt: true })

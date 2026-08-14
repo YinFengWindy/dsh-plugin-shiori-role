@@ -104,7 +104,7 @@ export class ShioriRoleService extends TypertRemoteService {
     await this.initializeCatalog()
     const effective = this.effectiveMemoryConfig()
     const memoryStore = new ShioriMemoryStore(
-      resolveMemoryDbPath(resolveMemoryRoot(this.config.memoryRoot), effective.dbPath ?? this.config.memory?.dbPath),
+      resolveMemoryDbPath(resolveMemoryRoot(this.config.memoryRoot), this.config.memory?.dbPath),
     )
     this.memoryStore = memoryStore
     this.ctx.effect(() => () => { memoryStore.close() }, 'shioriRole.memoryStoreClose')
@@ -266,7 +266,6 @@ export class ShioriRoleService extends TypertRemoteService {
     const record: MemoryConfigRecord = {
       ...(input.embedding === undefined ? {} : { embedding: sanitizeEndpoint(input.embedding) }),
       ...(input.extraction === undefined ? {} : { extraction: sanitizeEndpoint(input.extraction) }),
-      ...(input.dbPath?.trim() ? { dbPath: input.dbPath.trim() } : {}),
       updatedAt: new Date().toISOString(),
     }
     await this.requireMemoryConfigTable().put(CONFIG_KEY, record)
@@ -283,11 +282,9 @@ export class ShioriRoleService extends TypertRemoteService {
     const startup = this.config.memory
     const embedding = stored?.embedding ?? startup?.embedding
     const extraction = stored?.extraction ?? startup?.extraction
-    const dbPath = stored?.dbPath ?? startup?.dbPath
     return {
       ...(embedding === undefined ? {} : { embedding }),
       ...(extraction === undefined ? {} : { extraction }),
-      ...(dbPath === undefined ? {} : { dbPath }),
       ...(stored?.updatedAt === undefined ? {} : { updatedAt: stored.updatedAt }),
     }
   }
