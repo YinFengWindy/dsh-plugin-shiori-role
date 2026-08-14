@@ -24,3 +24,18 @@ Agent presets remain responsible for the Agent's capability composition. A works
 5. Prove that changing the workspace role affects only later sessions.
 
 Shiori's existing Python runtime is the source of product behavior to migrate, but this repository is implemented as a native TypeScript/ESM Cordis package for deepseek-harness.
+
+## Package Entry Point
+
+The package exports a Cordis function plugin named `shiori-role`. Mount it in an Agent scope with a role definition:
+
+```yaml
+- id: role-shiori-maintainer
+  name: '@deepseek-ai/dsh-plugin-shiori-role'
+  config:
+    id: shiori-maintainer
+    name: Shiori Maintainer
+    prompt: You are the Shiori maintainer for this workspace.
+```
+
+This first entry point owns only the role identity contribution. Workspace selection, session binding, and role memory will be added without changing the role prompt contract.

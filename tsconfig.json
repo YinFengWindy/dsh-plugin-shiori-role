@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "es2024",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "rootDir": "src",
+    "outDir": "lib/types",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
+    "paths": {
+      "@deepseek-ai/cordis": ["../deepseek-harness/vendor/cordis/lib/types"],
+      "@deepseek-ai/dsh-system-prompt": ["../deepseek-harness/packages/core/system-prompt/lib/types"]
+    }
+  },
+  "include": ["src"]
+}
