@@ -32,14 +32,12 @@ import type {
 } from './types.ts'
 import type { RoleMemoryScope } from './memory-contract.ts'
 import { DuplicateRoleError, UnknownRoleError } from './registry.ts'
-import {
-  applyMemoryTools,
-  extractMemories,
-  ShioriMemoryService,
-  type MemoryEmbeddingConfig,
-  type MemoryExtractionConfig,
-} from './memory.ts'
-import { WorkspaceMemoryTable } from './file-memory-table.ts'
+import type { MemoryEmbeddingConfig, MemoryExtractionConfig } from './memory.ts'
+import { DefaultMemoryEngine } from './memory-engine/engine.ts'
+import { ChatClient, Embedder } from './memory-engine/llm.ts'
+import { ShioriMemoryStore, resolveMemoryDbPath } from './memory-engine/store.ts'
+import { resolveMemoryConfig } from './memory-engine/config.ts'
+import { applyMemoryTools } from './memory-engine/tools.ts'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -57,10 +55,12 @@ export interface Config {
   readonly roles: readonly ShioriRoleDefinition[]
   /** Optional global DSH data root; role memory is shared across DSH workspaces. */
   readonly memoryRoot?: string
-  /** Optional semantic memory layer: embedding retrieval and post-turn extraction. */
+  /** Optional semantic memory layer: embedding retrieval, supersede, and post-turn extraction. */
   readonly memory?: {
     readonly embedding?: MemoryEmbeddingConfig
     readonly extraction?: MemoryExtractionConfig
+    /** Optional SQLite database path; defaults to `<memoryRoot>/shiori-plugin/role/memory2.db`. */
+    readonly dbPath?: string
   }
 }
 
@@ -76,7 +76,8 @@ export class ShioriRoleService extends TypertRemoteService {
   private assetTable?: KvTable<string, RoleAssetRecord>
   private catalogTable?: KvTable<string, RoleCatalogRecord>
   private memoryTable?: KvTable<string, StoredRoleMemoryRecord>
-  private memoryService?: ShioriMemoryService
+  private memoryStore?: ShioriMemoryStore
+  private memoryEngine?: DefaultMemoryEngine
   private readonly boundRoles = new Map<SessionIdType, string>()
 
   constructor(ctx: Context, readonly config: Config) {
@@ -94,10 +95,17 @@ export class ShioriRoleService extends TypertRemoteService {
     this.catalogTable = this.domain.table('catalog')
     this.memoryTable = this.domain.table('memories')
     await this.initializeCatalog()
-    this.memoryService = new ShioriMemoryService(
-      new WorkspaceMemoryTable(resolveMemoryRoot(this.config.memoryRoot)),
-      this.config.memory?.embedding === undefined ? {} : { embedding: this.config.memory.embedding },
+    const memoryStore = new ShioriMemoryStore(
+      resolveMemoryDbPath(resolveMemoryRoot(this.config.memoryRoot), this.config.memory?.dbPath),
     )
+    this.memoryStore = memoryStore
+    this.ctx.effect(() => () => { memoryStore.close() }, 'shioriRole.memoryStoreClose')
+    this.memoryEngine = new DefaultMemoryEngine({
+      store: memoryStore,
+      ...(this.config.memory?.embedding === undefined ? {} : { embedder: new Embedder(this.config.memory.embedding) }),
+      ...(this.config.memory?.extraction === undefined ? {} : { chat: new ChatClient(this.config.memory.extraction) }),
+      config: { retrieval: resolveMemoryConfig() },
+    })
     this.ctx.inject(['agents', 'systemPrompt', 'tools'], (runtimeCtx) => {
       for (const agent of runtimeCtx.agents.list()) this.mountAgent(agent)
       runtimeCtx.on('agent/created', ({ agent }) => { this.mountAgent(agent) })
@@ -165,7 +173,7 @@ export class ShioriRoleService extends TypertRemoteService {
       for (const [key, row] of this.requireMemoryTable().entries()) {
         if (row.roleId === roleId) await this.requireMemoryTable().delete(key)
       }
-      await this.requireMemoryService().forgetRole(roleId)
+      this.forgetRoleMemory(roleId)
     }
     for (const [key, row] of this.requirePendingTable().entries()) {
       if (row.roleId !== roleId) continue
@@ -303,7 +311,7 @@ export class ShioriRoleService extends TypertRemoteService {
     if (sessionRoleId === undefined) await this.commitSessionRole(agent.session.id, resolved.id)
     await agentCtx.plugin(applyRolePlugin, resolved satisfies RolePluginConfig)
     const memoryPlugin = Object.assign(
-      (inner: Context) => applyMemoryTools(inner, this.memoryForAgent(agent), resolved.id),
+      (inner: Context) => applyMemoryTools(inner, this.requireMemoryEngine(), resolved.id),
       { inject: ['systemPrompt', 'tools'] },
     )
     await agentCtx.plugin(memoryPlugin)
@@ -311,9 +319,9 @@ export class ShioriRoleService extends TypertRemoteService {
     return resolved
   }
 
-  /** Access role-scoped memory after initialization. */
-  memory(): ShioriMemoryService {
-    return this.requireMemoryService()
+  /** Access role memory after initialization. */
+  memory(): DefaultMemoryEngine {
+    return this.requireMemoryEngine()
   }
 
   private async initializeCatalog(): Promise<void> {
@@ -406,45 +414,30 @@ export class ShioriRoleService extends TypertRemoteService {
       order: PERSONA_ORDER,
       text: () => resolveRole().prompt,
     })
-    applyMemoryTools(agent.ctx, this.memoryForAgent(agent), () => {
+    applyMemoryTools(agent.ctx, this.requireMemoryEngine(), () => {
       const role = resolveRole()
       return { roleId: role.id, sessionKey: String(agent.session.id) } satisfies RoleMemoryScope
     })
     agent.ctx.on('agent/turn-stopping', ({ turn }) => {
-      const extraction = this.config.memory?.extraction
-      if (extraction === undefined) return
+      if (this.config.memory?.extraction === undefined) return
       const role = resolveRole()
       const transcript = turnTranscript(agent, turn)
       if (!transcript) return
-      void this.extractTurn(extraction, role, agent, turn, transcript).catch(error => {
-        this.ctx.logger.warn(`shiori-role: post-turn extraction failed: ${String(error)}`)
+      void this.requireMemoryEngine().ingest({
+        content: transcript,
+        sourceKind: 'conversation_turn',
+        scope: { roleId: role.id, sessionKey: String(agent.session.id) },
+        metadata: { source_ref: `turn:${turn}` },
+      }).then(result => {
+          if (!result.accepted) {
+          this.ctx.logger.warn(`shiori-role: post-turn extraction skipped: ${result.summary ?? 'unknown'}`)
+        }
+      }).catch(error => {
+          this.ctx.logger.warn(`shiori-role: post-turn extraction failed: ${String(error)}`)
       })
     })
     const stored = this.requireSessionTable().get(agent.session.id)
     if (stored !== undefined) this.boundRoles.set(agent.session.id, stored.roleId)
-  }
-
-  /** Extract durable memories from one completed turn and persist them. */
-  private async extractTurn(
-    extraction: MemoryExtractionConfig,
-    role: ShioriRoleDefinition,
-    agent: Agent,
-    turn: number,
-    transcript: string,
-  ): Promise<void> {
-    const existingProfile = this.requireMemoryService().query({ scope: { roleId: role.id }, limit: 100 }).records
-      .filter(item => item.kind === 'profile' || item.kind === 'preference' || item.kind === 'procedure')
-      .map(item => `- [${item.kind}] ${item.summary}`)
-      .join('\n')
-      .slice(0, 6000)
-    const items = await extractMemories(extraction, transcript, existingProfile)
-    if (items.length === 0) return
-    await this.requireMemoryService().saveExtracted(
-      { roleId: role.id, sessionKey: String(agent.session.id) },
-      `turn:${turn}`,
-      items,
-      [{ kind: 'turn', refs: [`turn:${turn}`], sourceRef: String(agent.session.id) }],
-    )
   }
 
   private async commitSessionRole(sessionId: SessionIdType, roleId: string): Promise<void> {
@@ -488,14 +481,21 @@ export class ShioriRoleService extends TypertRemoteService {
     return this.catalogTable
   }
 
-  private requireMemoryService(): ShioriMemoryService {
-    if (this.memoryService === undefined) throw new Error('shiori-role: service is not started')
-    return this.memoryService
+  private requireMemoryEngine(): DefaultMemoryEngine {
+    if (this.memoryEngine === undefined) throw new Error('shiori-role: service is not started')
+    return this.memoryEngine
   }
 
-  private memoryForAgent(agent: Agent): ShioriMemoryService {
-    void agent
-    return this.requireMemoryService()
+  private requireMemoryStore(): ShioriMemoryStore {
+    if (this.memoryStore === undefined) throw new Error('shiori-role: service is not started')
+    return this.memoryStore
+  }
+
+  /** 物理删除一个角色的全部记忆（角色被删除时调用）。 */
+  private forgetRoleMemory(roleId: string): void {
+    const { items } = this.requireMemoryStore().listItemsForAdmin({ roleId, pageSize: 200 })
+    const ids = items.map(item => String(item.id)).filter(Boolean)
+    if (ids.length > 0) this.requireMemoryStore().deleteItemsBatch(ids)
   }
 
   private requireMemoryTable(): KvTable<string, StoredRoleMemoryRecord> {

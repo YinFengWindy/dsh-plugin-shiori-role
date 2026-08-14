@@ -8,10 +8,37 @@ declare module 'node:fs' {
 
 declare module 'node:path' {
   export function join(...parts: string[]): string
+  export function dirname(path: string): string
 }
 
 declare module 'node:os' {
   export function homedir(): string
+}
+
+declare module 'node:crypto' {
+  export interface Hash {
+    update(data: string): Hash
+    digest(encoding: 'hex'): string
+  }
+  export function createHash(algorithm: string): Hash
+}
+
+declare module 'node:sqlite' {
+  export interface StatementResultingChanges {
+    readonly changes: number | bigint
+    readonly lastInsertRowid: number | bigint
+  }
+  export class StatementSync {
+    run(...anonymousParameters: unknown[]): StatementResultingChanges
+    get(...anonymousParameters: unknown[]): Record<string, unknown> | undefined
+    all(...anonymousParameters: unknown[]): Record<string, unknown>[]
+  }
+  export class DatabaseSync {
+    constructor(path: string)
+    exec(sql: string): void
+    prepare(sql: string): StatementSync
+    close(): void
+  }
 }
 
 declare const process: {

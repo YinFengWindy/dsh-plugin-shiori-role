@@ -24,10 +24,10 @@ function stubFetchChat(handler: (url: string, init?: RequestInit) => Response | 
   return () => { globalThis.fetch = original }
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 2000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    if (predicate()) return
+    if (await predicate()) return
     await new Promise(resolve => setTimeout(resolve, 10))
   }
   throw new Error('waitFor: condition not met before timeout')
@@ -358,6 +358,7 @@ test('extracts durable memories after a completed turn when extraction is config
       }) } }],
     })
   })
+  let serviceFiber: Awaited<ReturnType<Context['plugin']>> | undefined
   try {
     const ctx = new Context()
     const domain = memoryDomain()
@@ -370,7 +371,7 @@ test('extracts durable memories after a completed turn when extraction is config
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(AgentRegistry)
-    await ctx.plugin(ShioriRoleService, {
+    serviceFiber = await ctx.plugin(ShioriRoleService, {
       roles: [{ id: 'maintainer', name: 'Maintainer', prompt: 'Maintainer prompt.' }],
       memoryRoot: root,
       memory: { extraction: { endpoint: 'https://chat.test/v1', model: 'test-chat' } },
@@ -394,17 +395,17 @@ test('extracts durable memories after a completed turn when extraction is config
 
     emitAgentEvent(ctx, created.agent, 'agent/turn-stopping', { turn: 1, signal: new AbortController().signal })
 
-    await waitFor(() => ctx.shioriRole.memory().recall('maintainer').some(item => item.summary.includes('咖啡')))
-    const item = ctx.shioriRole.memory().recall('maintainer').find(entry => entry.summary.includes('咖啡'))
+    await waitFor(async () => (await ctx.shioriRole.memory().recall('maintainer')).some(item => item.summary.includes('咖啡')))
+    const item = (await ctx.shioriRole.memory().recall('maintainer')).find(entry => entry.summary.includes('咖啡'))
     assert.equal(item?.kind, 'profile')
-    assert.equal(item?.sourceRef, 'turn:1')
-    assert.equal(item?.extra.category, 'personal_fact')
-    assert.equal(item?.extra.emotional_weight, '4')
-    assert.deepEqual(item?.evidence, [{ kind: 'turn', refs: ['turn:1'], sourceRef: 'session-extract' }])
+    assert.equal((item?.signals as Record<string, unknown> | undefined)?.category, 'personal_fact')
+    assert.equal((item?.signals as Record<string, unknown> | undefined)?.emotional_weight, 4)
+    assert.equal(item?.evidence?.[0]?.sourceRef, 'turn:1#profile')
 
     dispose()
     await created.scope.dispose()
   } finally {
+    if (serviceFiber !== undefined) await serviceFiber.dispose()
     restore()
     await rm(root, { recursive: true, force: true })
   }

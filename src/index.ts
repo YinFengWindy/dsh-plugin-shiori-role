@@ -31,6 +31,38 @@ export type {
   MemoryExtractionConfig,
 } from './memory.ts'
 export {
+  DefaultMemoryEngine,
+  normalizeScope,
+} from './memory-engine/engine.ts'
+export type {
+  ExtractedMemory as EngineExtractedMemory,
+} from './memory-engine/engine.ts'
+export type {
+  MemoryCapability,
+  MemoryEngine,
+  MemoryEngineDescriptor,
+  MemoryIngestRequest,
+  MemoryIngestResult,
+  MemoryMutation,
+  MemoryMutationResult,
+  MemoryQuery,
+  MemoryQueryResult,
+  MemoryRecord,
+  MemoryScope,
+  MemoryToolProfile,
+  MemoryToolSpec,
+  StoreHit,
+} from './memory-engine/contracts.ts'
+export { ShioriMemoryStore, resolveMemoryDbPath, contentHash, hotnessScore } from './memory-engine/store.ts'
+export { ChatClient, Embedder, cosineSimilarity } from './memory-engine/llm.ts'
+export { Retriever, extractTerms, rrfMerge } from './memory-engine/retriever.ts'
+export {
+  DEFAULT_MEMORY_CONFIG,
+  resolveMemoryConfig,
+  type DefaultMemoryConfig,
+  type RetrievalConfig,
+} from './memory-engine/config.ts'
+export {
   DuplicateRoleError,
   MemoryRoleSelectionStore,
   UnknownRoleError,

@@ -76,9 +76,11 @@ dependencies:
         model: gpt-4o-mini
 ```
 
-检索镜像 Shiori `memory2` 的实现：关键词 lane 保留字面命中，向量 lane 独立按余弦相似度召回（阈值 0.35），两路排名通过 Reciprocal Rank Fusion（`1/(60+vec_rank) + 0.5/(60+keyword_rank)`）融合。回合后抽取同样对齐 Shiori：监听 `agent/turn-stopping`，把该回合的 `USER`/`ASSISTANT` 对话交给抽取端点，按 Shiori 的长期记忆契约（USER 原话锚点、跨 session 时效性、来源方向、不提取 event）输出 `profile` / `preference` / `procedure`，连同 `emotional_weight` 等字段异步写入记忆；显式 `memorize` 的写入仍走 content-hash 查重与强化。
+检索镜像 Shiori `memory2` 的实现：关键词 lane 保留字面命中，向量 lane 独立按余弦相似度召回（阈值 0.35），两路排名通过 Reciprocal Rank Fusion（`1/(60+vec_rank) + 0.5/(60+keyword_rank)`）融合，并叠加 hotness 热度分。回合后抽取同样对齐 Shiori：监听 `agent/turn-stopping`，把该回合的 `USER`/`ASSISTANT` 对话交给抽取端点，按 Shiori 的长期记忆契约（USER 原话锚点、跨 session 时效性、来源方向、不提取 event）输出 `profile` / `preference` / `procedure`，连同 `emotional_weight` 等字段异步写入记忆。
 
-当前版本不宣称与 Shiori `default_memory` 完全等价。现已实现确定性的大小写不敏感文本检索、embedding 语义检索与混合 RRF 排序、精确重复强化、显式记忆工具、回合后自动抽取和 prompt 注入；记忆巩固（consolidation、supersede、merge）和后台 ingest 尚未实现。
+记忆存储使用 SQLite（`<memoryRoot>/shiori-plugin/role/memory2.db`，Node 内置 `node:sqlite`，零依赖）：显式 `memorize` 走 content-hash 查重与强化；写入时对语义高度相似的旧条目自动退休（preference/profile 相似度 ≥ 0.90，高情绪 profile 为 0.92），同 `tool_requirement` 的 procedure 规则自动合并——防止同类记忆无限堆积。embedding 端点不可用或未配置时，全部自动降级为确定性文本检索，记忆与查询不受影响。
+
+当前版本不宣称与 Shiori `default_memory` 完全等价。现已实现确定性文本检索、embedding 语义检索与混合 RRF 排序、精确重复强化、语义 supersede/merge、显式记忆工具、回合后自动抽取和 prompt 注入；HyDE、query 改写、巩固（consolidation）与后台 ingest 尚未实现。
 
 ## 开发验证
 
