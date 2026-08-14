@@ -20,7 +20,7 @@ Agent preset 继续负责 Agent 的能力组合。工作区角色和 Agent prese
 1. 发现并校验角色定义。
 2. 保存每个工作区的当前角色。
 3. 创建或恢复 Agent 时绑定角色。
-4. 持久化 session 的角色绑定。
+4. 在角色 sidecar domain 中持久化 session 的角色绑定。
 5. 证明切换工作区角色只影响之后创建的 session。
 
 Shiori 现有 Python runtime 是产品行为的迁移来源，但本仓库使用 deepseek-harness 的原生 TypeScript/ESM Cordis package 实现。
@@ -38,9 +38,8 @@ Shiori 现有 Python runtime 是产品行为的迁移来源，但本仓库使用
     prompt: 你是这个工作区的 Shiori 维护者。
 ```
 
-当前入口负责角色身份 prompt。工作区选择、session 绑定和角色记忆会在不改变角色 prompt 契约的前提下继续接入。
+角色 service 会在自己的 durable domain 中保存工作区默认角色和 session 固化角色。本插件不会向 harness core 添加未经登记的自定义 session event；模型可见的角色 prompt 仍通过 request header 重建。
 
 ## 领域层
 
-`WorkspaceRoleRegistry` 管理经过校验的角色目录和工作区当前角色。当前角色只是之后创建 Agent 的默认值；Agent 创建边界应将解析出的 `roleId` 固化到 session，已有 Agent 不会重新读取工作区默认值。
-
+`WorkspaceRoleRegistry` 管理经过校验的角色目录和工作区当前角色。`ShioriRoleService` 在 `shiori-role` storage domain 中同时保存工作区默认值和不可变的 session 角色绑定。当前角色只是之后创建 Agent 的默认值；Agent 创建边界会固化解析出的 `roleId`，已有 Agent 不会重新读取工作区默认值。
