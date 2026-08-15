@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { IconUserOutline16, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type { SessionRoleSnapshot, ShioriRoleView } from '../types.ts'
 import type { RoleClientApi } from './api.ts'
 import { primaryAsset, useAssetUrl } from './assets.ts'
@@ -10,7 +9,6 @@ import type { RoleText } from './RoleSettings.tsx'
 interface RoleSelectorProps {
   readonly session: { readonly sessionId: string; readonly blank: boolean }
   readonly api: RoleClientApi
-  readonly ctx: ClientContext
   readonly t: RoleText
 }
 
@@ -19,7 +17,7 @@ function Avatar({ role, api }: { role: ShioriRoleView; api: RoleClientApi }) {
   return <span className="shiori-role-chip__avatar">{url === undefined ? <IconUserOutline16 size={16} /> : <img src={url} alt="" />}</span>
 }
 
-export function RoleSelector({ session, api, ctx, t }: RoleSelectorProps) {
+export function RoleSelector({ session, api, t }: RoleSelectorProps) {
   const [snapshot, setSnapshot] = useState<SessionRoleSnapshot | null>(null)
   const [open, setOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -34,8 +32,9 @@ export function RoleSelector({ session, api, ctx, t }: RoleSelectorProps) {
 
   const selectedId = snapshot?.roleId ?? snapshot?.pendingRoleId
   const role = snapshot?.roles.find(item => item.id === selectedId)
-  const portraitUrl = useAssetUrl(api, role === undefined ? undefined : primaryAsset(role, 'portrait'))
-  useRoleTheme(ctx, role, portraitUrl)
+  const themeAsset = role === undefined ? undefined : (primaryAsset(role, 'theme_background') ?? primaryAsset(role, 'portrait'))
+  const themeUrl = useAssetUrl(api, themeAsset)
+  useRoleTheme(role, themeUrl)
   const locked = snapshot?.locked === true || !session.blank
   const items = useMemo(() => snapshot?.roles.map(item => ({
     id: item.id,

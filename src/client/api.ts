@@ -4,6 +4,7 @@ import type {
   RoleCatalogSnapshot,
   SaveMemoryConfigInput,
   SaveRoleInput,
+  SelectThemeBackgroundInput,
   SessionRoleSnapshot,
   UploadRoleAssetInput,
 } from '../types.ts'
@@ -16,6 +17,8 @@ export interface RoleClientApi {
   uploadAsset(input: UploadRoleAssetInput): Promise<RoleCatalogSnapshot>
   removeAsset(assetId: string): Promise<RoleCatalogSnapshot>
   assetData(assetId: string): Promise<RoleAssetData>
+  selectBackground(input: SelectThemeBackgroundInput): Promise<RoleCatalogSnapshot>
+  clearBackground(roleId: string): Promise<RoleCatalogSnapshot>
   session(sessionId: string): Promise<SessionRoleSnapshot>
   stage(sessionId: string, roleId: string): Promise<SessionRoleSnapshot>
   memoryConfig(): Promise<MemoryConfigSnapshot>

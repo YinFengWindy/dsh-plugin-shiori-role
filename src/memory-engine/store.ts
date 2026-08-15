@@ -38,6 +38,15 @@ CREATE TABLE IF NOT EXISTS consolidation_events (
     item_id     TEXT,
     created_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS completed_compactions (
+    source_ref  TEXT PRIMARY KEY,
+    completed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS consolidation_long_term_refs (
+    source_ref  TEXT PRIMARY KEY,
+    item_id     TEXT,
+    created_at  TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS memory_replacements (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     old_item_id       TEXT NOT NULL,
@@ -370,6 +379,30 @@ export class ShioriMemoryStore {
     return this.db.prepare(
       'SELECT 1 FROM consolidation_events WHERE source_ref=? LIMIT 1',
     ).get((sourceRef ?? '').trim()) !== undefined
+  }
+
+  hasCompletedCompaction(sourceRef: string): boolean {
+    return this.db.prepare(
+      'SELECT 1 FROM completed_compactions WHERE source_ref=? LIMIT 1',
+    ).get((sourceRef ?? '').trim()) !== undefined
+  }
+
+  markCompactionCompleted(sourceRef: string): void {
+    this.db.prepare(
+      'INSERT OR IGNORE INTO completed_compactions(source_ref, completed_at) VALUES (?, ?)',
+    ).run((sourceRef ?? '').trim(), nowIso())
+  }
+
+  hasConsolidationLongTermRef(sourceRef: string): boolean {
+    return this.db.prepare(
+      'SELECT 1 FROM consolidation_long_term_refs WHERE source_ref=? LIMIT 1',
+    ).get((sourceRef ?? '').trim()) !== undefined
+  }
+
+  markConsolidationLongTermRef(sourceRef: string, itemId?: string): void {
+    this.db.prepare(
+      'INSERT OR IGNORE INTO consolidation_long_term_refs(source_ref, item_id, created_at) VALUES (?, ?, ?)',
+    ).run((sourceRef ?? '').trim(), itemId ?? null, nowIso())
   }
 
   markSuperseded(itemId: string): void {
@@ -1145,7 +1178,8 @@ export class ShioriMemoryStore {
 }
 
 /** 记忆库默认路径（供 service 装配）。 */
-export function resolveMemoryDbPath(memoryRoot: string, configured?: string): string {
-  if (configured?.trim()) return configured.trim()
-  return join(memoryRoot, 'shiori-plugin', 'role', 'memory2.db')
+export function resolveMemoryDbPath(memoryRoot: string, roleId: string): string {
+  const id = roleId.trim()
+  if (!id || id.includes('..') || /[\\/]/.test(id)) throw new Error(`shiori-role: invalid role id '${roleId}'`)
+  return join(memoryRoot, 'shiori-plugin', 'role', id, 'memory', 'memory2.db')
 }

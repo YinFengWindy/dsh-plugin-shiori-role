@@ -52,9 +52,9 @@ dependencies:
 
 ## 角色记忆
 
-每个角色拥有隔离的持久记忆作用域，并由所有 DSH workspace 共享。全局目录 `$DSH_HOME/shiori-plugin/role/<role-id>/memory/` 包含同步的两层存储：`semantic.json` 保存 Shiori 风格的结构化记录，负责检索、去重、作用域、状态和强化；`MEMORY.md` 是模型实际读取且方便人工编辑的长期记忆文档。目录中还会按 Shiori 角色记忆布局初始化 `SELF.md`、`HISTORY.md`、`RECENT_CONTEXT.md` 和 `PENDING.md`。语义写入只同步 `MEMORY.md` 中带标记的自动区块，不覆盖区块外人工编写的 Markdown。
+每个角色拥有隔离的持久记忆作用域，并由所有 DSH workspace 共享。可编辑角色定义保存在 `$DSH_HOME/shiori-plugin/role/<role-id>/role.json`；完整的角色可读投影位于 `$DSH_HOME/shiori-plugin/role/<role-id>/memory/`：`MEMORY.md` 保存长期事实、偏好与明确要求记住的内容，`HISTORY.md` 追加共同经历，`PENDING.md` 缓冲长期候选，`RECENT_CONTEXT.md` 保存最近话题与进行中事项，`SELF.md` 维护角色自我认知。相邻的 `memory2.db` 继续负责检索与结构化记忆。
 
-配置 `memory` 块可以启用 Shiori 语义记忆层：`embedding` 提供 OpenAI 兼容的向量端点（写入时生成 embedding，查询时做独立向量召回），`extraction` 提供 OpenAI 兼容的 chat 端点（回合结束后异步抽取长期记忆）。两者缺省时自动降级为确定性文本检索，不配置任何端点也能正常工作。
+Shiori 语义记忆层不配置 `memory` 块也会启用。每轮完成后，插件默认通过当前 Agent 的 Harness provider/model 发起一次有上限的独立请求，在回合关闭前抽取长期记忆；可选的 `extraction` 端点会覆盖这条默认调用。可选的 `embedding` 端点提供独立向量召回；未配置时检索降级为确定性文本匹配。
 
 ```yaml
 - id: shiori-role
@@ -76,11 +76,11 @@ dependencies:
         model: gpt-4o-mini
 ```
 
-检索镜像 Shiori `memory2` 的实现：关键词 lane 保留字面命中，向量 lane 独立按余弦相似度召回（阈值 0.35），两路排名通过 Reciprocal Rank Fusion（`1/(60+vec_rank) + 0.5/(60+keyword_rank)`）融合，并叠加 hotness 热度分。回合后抽取同样对齐 Shiori：监听 `agent/turn-stopping`，把该回合的 `USER`/`ASSISTANT` 对话交给抽取端点，按 Shiori 的长期记忆契约（USER 原话锚点、跨 session 时效性、来源方向、不提取 event）输出 `profile` / `preference` / `procedure`，连同 `emotional_weight` 等字段异步写入记忆。
+检索镜像 Shiori `memory2` 的实现：关键词 lane 保留字面命中，向量 lane 独立按余弦相似度召回（阈值 0.35），两路排名通过 Reciprocal Rank Fusion（`1/(60+vec_rank) + 0.5/(60+keyword_rank)`）融合，并叠加 hotness 热度分。回合后抽取同样对齐 Shiori：监听 `agent/turn-stopping`，把该回合的 `USER`/`ASSISTANT` 对话交给一次独立且有上限的模型请求，按 Shiori 的长期记忆契约（USER 原话锚点、跨 session 时效性、来源方向、不提取 event）输出 `profile` / `preference` / `procedure`。监听器会等待写入完成再关闭回合；抽取失败只记录日志，不会让已经完成的回复失败。变化后的记忆由 Harness 追加为 runtime-context 快照，保留此前可复用的请求 prefix。
 
-记忆存储使用 SQLite（`<memoryRoot>/shiori-plugin/role/memory2.db`，Node 内置 `node:sqlite`，零依赖）：显式 `memorize` 走 content-hash 查重与强化；写入时对语义高度相似的旧条目自动退休（preference/profile 相似度 ≥ 0.90，高情绪 profile 为 0.92），同 `tool_requirement` 的 procedure 规则自动合并——防止同类记忆无限堆积。embedding 端点不可用或未配置时，全部自动降级为确定性文本检索，记忆与查询不受影响。
+记忆存储使用角色独立的 SQLite（`<memoryRoot>/shiori-plugin/role/<role-id>/memory/memory2.db`，Node 内置 `node:sqlite`，零依赖）：显式 `memorize` 走 content-hash 查重与强化；写入时对语义高度相似的旧条目自动退休（preference/profile 相似度 ≥ 0.90，高情绪 profile 为 0.92），同 `tool_requirement` 的 procedure 规则自动合并。Harness 成功压缩后，插件按照 `shadowedSeqs` 精确读取被压缩窗口，并按角色串行维护：追加 `history_entries` 与 `pending_items`，快照 `PENDING.md`，立即合并到 `MEMORY.md`，用同一批候选更新 `SELF.md`，生成 `RECENT_CONTEXT.md`，最后提交快照；optimizer 失败会回滚快照。SQLite 使用稳定的逐条 source ref 保存对应 event 和长期候选，并在整条流程成功后记录 compaction source ref，使重复投递直接跳过。`SELF.md`、`MEMORY.md` 与 `RECENT_CONTEXT.md` 的精简部分会注入角色上下文；`PENDING.md` 不注入，`HISTORY.md` 只作为可维护时间线。
 
-当前版本不宣称与 Shiori `default_memory` 完全等价。现已实现确定性文本检索、embedding 语义检索与混合 RRF 排序、精确重复强化、语义 supersede/merge、显式记忆工具、回合后自动抽取和 prompt 注入；HyDE、query 改写、巩固（consolidation）与后台 ingest 尚未实现。
+当前版本不宣称与 Shiori `default_memory` 完全等价。现已实现确定性文本检索、embedding 语义检索与混合 RRF 排序、精确重复强化、语义 supersede/merge、显式记忆工具、回合后自动抽取、compaction 驱动的 Markdown consolidation、即时角色 optimizer 和 prompt 注入；HyDE、query 改写、定时 optimizer、journal 投影与后台 ingest 尚未实现。
 
 ## 开发验证
 

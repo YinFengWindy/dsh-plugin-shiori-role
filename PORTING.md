@@ -19,7 +19,8 @@ LLM-dedup、procedure-tagger、rule_schema、Markdown consolidation 等重组件
 | 工具注册 | src/memory-engine/tools.ts | ✅ 完成 |
 | 接线 | src/service.ts（Config.memory + engine 装配） | ✅ 完成 |
 | HyDE / query-rewriter / sufficiency / dedup-decider / tagger / rule_schema | — | ⛔ 砍掉（重组件） |
-| core/memory/markdown/*（consolidation/maintenance/recent_context） | — | ⛔ 砍掉（保留 file-memory-table.ts 旧层） |
+| core/memory/markdown/consolidation.py | semantic-consolidation.ts + markdown-memory.ts | ✅ 迁移语义提取及 HISTORY/PENDING/RECENT_CONTEXT 投影，使用 Harness shadowedSeqs |
+| proactive_v2/memory_optimizer.py | markdown-memory.ts + self-memory.ts + role-files.ts | ✅ 迁移 PENDING 两阶段提交、MEMORY 合并、SELF 初始化与维护；compaction 后即时执行 |
 
 ## 存储层（SQLite，node:sqlite 内置，零依赖）
 
@@ -47,6 +48,8 @@ CREATE UNIQUE INDEX ux_items_hash ON memory_items (content_hash, memory_type);
 - embedding 存 JSON（Shiori 用 float32 blob + sqlite-vec；TS 用 JSON + 全表扫描，语义等价）
 
 ### consolidation_events（source_ref 主键，同一 source_ref 只写一次 event）
+### consolidation_long_term_refs（source_ref 主键，同一长期候选只写一次）
+### completed_compactions（source_ref 主键，完整维护成功后标记）
 ### memory_replacements（supersede/merge 溯源）
 - old_item_id/old_memory_type/old_summary/old_extra_json/old_happened_at/old_source_ref
 - new_item_id/.../relation_type('supersede')/source_ref/created_at
@@ -104,21 +107,13 @@ CREATE UNIQUE INDEX ux_items_hash ON memory_items (content_hash, memory_type);
 - context/procedure intent：procedure query 改写（LLM）
 - 注入规划：forced procedure（tool_requirement）→ 偏好/流程 → 事件/画像；字符预算截断
 
-## 巩固（consolidation，Markdown）
-- 窗口：last_consolidated 到 total-keep_count；force/archive_all
-- source_ref = 消息 id JSON 列表；单条 entry 子键 `#h:{sha1[:12]}`
-- LLM 从窗口对话提取 history_entry_payloads + pending_items（带标签）→
-  - event 经 upsert_consolidation_event 写入（semantic dedup 0.92/7 天）
-  - pending → PENDING.md（标签白名单 identity/preference/key_info/health_long_term/requested_memory/correction）
-  - history 条目 → journal 追加（按日期）
-- NSFW 记忆抽象：亲密内容按角色摘要化（显式/爱意/依恋/依赖/害羞 分类 → 抽象短语）
-- maintenance：MEMORY.md 结构整理（SELF 分区、HISTORY 归档、重复合并等）
-- recent_context：最近 N 轮概要
+## Compaction 与 Markdown 角色记忆
+
+Harness 保持唯一的上下文压缩策略。插件监听成功的 compaction，按 `shadowedSeqs` 读取原始窗口，复用 Shiori consolidation 语义提取。每个角色独立串行执行：追加 `HISTORY.md` 和 `PENDING.md`，快照 pending，执行 `PENDING.md -> MEMORY.md` optimizer，用同一份 pending 更新 `SELF.md`，生成 `RECENT_CONTEXT.md`，再提交快照。任一 optimizer 失败都会回滚 pending；整条链路成功后才写入 `completed_compactions`。SQLite 同时保存逐条 event 和长期候选，source ref 分别使用 `#event:<index>` 与 `#long-term:<index>`。
 
 ## 事件（dsh 适配）
 - TurnCommitted → agent/turn-stopping（异步 fire-and-forget）
-- TurnIngested → post_response_worker.run
-- ConsolidationCommitted → 由 Markdown 巩固触发
+- agent/turn-stopping → 通过当前 Harness 模型独立抽取并等待 memory2.db 写入
 - RetrievalCompleted / MemoryWritten → 内部回调（可发布日志）
 
 ## 实施顺序（已完成）
@@ -127,10 +122,10 @@ CREATE UNIQUE INDEX ux_items_hash ON memory_items (content_hash, memory_type);
 3. ✅ retriever.ts（两路独立召回 + RRF + hotness + 注入规划）
 4. ✅ engine.ts（query 意图分发 / remember+supersede+merge / forget / ingest 抽取 / admin / recall）
 5. ✅ tools.ts（recall_memory / memorize / forget_memory + 上下文注入）
-6. ✅ service.ts 接线（Config.memory 含 dbPath；SQLite 主存储；turn-stopping → engine.ingest）
-7. ✅ 测试全绿（34 个：27 旧 + 7 新引擎专属）
+6. ✅ service.ts 接线（角色目录 SQLite；turn-stopping → engine.ingest）
+7. ✅ 角色文件、SQLite 引擎与完整 compaction 流程均有 focused tests
 
 ## 与现有代码关系
 - src/memory.ts（旧简化版）保留导出（兼容旧测试/API），service.ts 已切换到 memory-engine
-- src/file-memory-table.ts 保留（旧 Markdown 层），新引擎不依赖它
-- 存储路径：`<memoryRoot>/shiori-plugin/role/memory2.db`（Config.memory.dbPath 可覆盖）
+- src/file-memory-table.ts 仅保留旧结构化 JSON 测试实现；角色目录的 `memory/` 维护五个 Shiori Markdown 文件
+- 存储路径：`<memoryRoot>/shiori-plugin/role/<role-id>/memory/memory2.db`。

@@ -6,6 +6,7 @@ import type {
   RoleCatalogSnapshot,
   SaveMemoryConfigInput,
   SaveRoleInput,
+  SelectThemeBackgroundInput,
   SessionRoleSnapshot,
   UploadRoleAssetInput,
   WorkspaceRoleSnapshot,
@@ -22,6 +23,8 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
       uploadAsset: (input: UploadRoleAssetInput) => Promise<RemoteResult<RoleCatalogSnapshot>>
       removeAsset: (assetId: string) => Promise<RemoteResult<RoleCatalogSnapshot>>
       assetData: (assetId: string) => Promise<RemoteResult<RoleAssetData>>
+      selectThemeBackground: (input: SelectThemeBackgroundInput) => Promise<RemoteResult<RoleCatalogSnapshot>>
+      clearThemeBackground: (roleId: string) => Promise<RemoteResult<RoleCatalogSnapshot>>
       sessionSnapshot: (sessionId: string) => Promise<RemoteResult<SessionRoleSnapshot>>
       stageSessionRole: (sessionId: string, roleId: string) => Promise<RemoteResult<SessionRoleSnapshot>>
       memoryConfigSnapshot: () => Promise<RemoteResult<MemoryConfigSnapshot>>
@@ -81,6 +84,10 @@ const uploadAssetSchema = z.object({
   data: z.string(),
   name: z.string().optional(),
 })
+const selectThemeBackgroundSchema = z.object({
+  roleId: z.string(),
+  assetId: z.string(),
+})
 const memoryEndpointSchema = z.object({
   endpoint: z.string(),
   apiKey: z.string().optional(),
@@ -137,6 +144,14 @@ export const TYPERT_REMOTE: TypertRemoteContribution = {
     {
       id: '@deepseek-ai/dsh-plugin-shiori-role#shioriRole/assetData', service: 'shioriRole', namespace: 'shioriRole', method: 'assetData', invocation: { kind: 'direct' },
       parameters: [json('assetId', z.string())], result: result('@deepseek-ai/dsh-plugin-shiori-role#RoleAssetData', z.object({ asset: assetSchema, data: z.string() })),
+    },
+    {
+      id: '@deepseek-ai/dsh-plugin-shiori-role#shioriRole/selectThemeBackground', service: 'shioriRole', namespace: 'shioriRole', method: 'selectThemeBackground', invocation: { kind: 'direct' },
+      parameters: [json('input', selectThemeBackgroundSchema)], result: result('@deepseek-ai/dsh-plugin-shiori-role#RoleCatalogSnapshot', catalogSchema),
+    },
+    {
+      id: '@deepseek-ai/dsh-plugin-shiori-role#shioriRole/clearThemeBackground', service: 'shioriRole', namespace: 'shioriRole', method: 'clearThemeBackground', invocation: { kind: 'direct' },
+      parameters: [json('roleId', z.string())], result: result('@deepseek-ai/dsh-plugin-shiori-role#RoleCatalogSnapshot', catalogSchema),
     },
     {
       id: '@deepseek-ai/dsh-plugin-shiori-role#shioriRole/sessionSnapshot', service: 'shioriRole', namespace: 'shioriRole', method: 'sessionSnapshot', invocation: { kind: 'direct' },

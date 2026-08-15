@@ -28,8 +28,6 @@ export interface RetrievalConfig {
 }
 
 export interface DefaultMemoryConfig {
-  /** SQLite 数据库路径；留空时用 `<memoryRoot>/shiori-plugin/role/memory2.db`。 */
-  readonly dbPath?: string
   readonly retrieval: RetrievalConfig
 }
 

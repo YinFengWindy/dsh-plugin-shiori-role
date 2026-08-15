@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { type TestContext } from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
-import AgentRegistry, { emitAgentEvent, type Agent } from '@deepseek-ai/dsh-agent'
+import AgentRegistry, { agentEvents, emitAgentEvent, type Agent } from '@deepseek-ai/dsh-agent'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { createScope, scopeOf, type Scope } from '@deepseek-ai/dsh-scope'
 import SystemPrompt, { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
-import { ShioriRoleService } from '../src/service.ts'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { ShioriRoleService, type Config as RoleServiceConfig } from '../src/service.ts'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -31,6 +32,19 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 
     await new Promise(resolve => setTimeout(resolve, 10))
   }
   throw new Error('waitFor: condition not met before timeout')
+}
+
+async function isolatedMemoryRoot(t: TestContext): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), 'shiori-role-service-'))
+  return root
+}
+
+async function pluginService(ctx: Context, t: TestContext, config: RoleServiceConfig): Promise<void> {
+  const fiber = await ctx.plugin(ShioriRoleService, config)
+  t.after(async () => {
+    await fiber.dispose()
+    if (config.memoryRoot !== undefined) await rm(config.memoryRoot, { recursive: true, force: true })
+  })
 }
 
 function memoryDomain() {
@@ -77,7 +91,7 @@ function attachmentService() {
   }
 }
 
-test('persists a workspace default and binds it once to a new Agent scope', async () => {
+test('persists a workspace default and binds it once to a new Agent scope', async t => {
   const ctx = new Context()
   const domain = memoryDomain()
   const attachments = attachmentService()
@@ -88,7 +102,8 @@ test('persists a workspace default and binds it once to a new Agent scope', asyn
   } as never)
   await ctx.plugin(SystemPrompt, { persona: 'Deployment identity.' })
   await ctx.plugin(ToolRuntime)
-  await ctx.plugin(ShioriRoleService, {
+  await pluginService(ctx, t, {
+    memoryRoot: await isolatedMemoryRoot(t),
     roles: [{ id: 'maintainer', name: 'Maintainer', prompt: 'You are the Shiori maintainer.' }],
   })
   await ctx.shioriRole.select('workspace-a' as never, 'maintainer')
@@ -126,7 +141,7 @@ async function agent(ctx: Context, rawId: string, cwd: string): Promise<{ agent:
   return { agent: value, scope }
 }
 
-test('automatically mounts workspace roles and preserves a resumed session binding', async () => {
+test('automatically mounts workspace roles and preserves a resumed session binding', async t => {
   const ctx = new Context()
   const domain = memoryDomain()
   const attachments = attachmentService()
@@ -139,7 +154,8 @@ test('automatically mounts workspace roles and preserves a resumed session bindi
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(AgentRegistry)
-  await ctx.plugin(ShioriRoleService, {
+  await pluginService(ctx, t, {
+    memoryRoot: await isolatedMemoryRoot(t),
     roles: [
       { id: 'maintainer', name: 'Maintainer', prompt: 'You are the Shiori maintainer.' },
       { id: 'writer', name: 'Writer', prompt: 'You are the Shiori writer.' },
@@ -174,14 +190,15 @@ test('automatically mounts workspace roles and preserves a resumed session bindi
   await second.scope.dispose()
 })
 
-test('exposes a client-safe snapshot and updates the workspace default remotely', async () => {
+test('exposes a client-safe snapshot and updates the workspace default remotely', async t => {
   const ctx = new Context()
   const domain = memoryDomain()
   const attachments = attachmentService()
   ctx.provide('storageDomain', domain.service as never)
   ctx.provide('attachments', attachments.service as never)
   ctx.provide('workspaceRegistry', { resolveByPath: async () => undefined } as never)
-  await ctx.plugin(ShioriRoleService, {
+  await pluginService(ctx, t, {
+    memoryRoot: await isolatedMemoryRoot(t),
     roles: [{ id: 'maintainer', name: 'Maintainer', prompt: 'Private model prompt.' }],
   })
 
@@ -193,7 +210,7 @@ test('exposes a client-safe snapshot and updates the workspace default remotely'
   assert.equal(selected.activeRoleId, 'maintainer')
 })
 
-test('stages a blank-session role and commits it on first prompt assembly', async () => {
+test('stages a blank-session role and commits it on first prompt assembly', async t => {
   const ctx = new Context()
   const domain = memoryDomain()
   const attachments = attachmentService()
@@ -203,7 +220,8 @@ test('stages a blank-session role and commits it on first prompt assembly', asyn
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(AgentRegistry)
-  await ctx.plugin(ShioriRoleService, {
+  await pluginService(ctx, t, {
+    memoryRoot: await isolatedMemoryRoot(t),
     roles: [
       { id: 'maintainer', name: 'Maintainer', prompt: 'Maintainer prompt.' },
       { id: 'writer', name: 'Writer', prompt: 'Writer prompt.' },
@@ -227,7 +245,7 @@ test('stages a blank-session role and commits it on first prompt assembly', asyn
   await created.scope.dispose()
 })
 
-test('migrates a legacy premature binding while its live session is still blank', async () => {
+test('migrates a legacy premature binding while its live session is still blank', async t => {
   const ctx = new Context()
   const domain = memoryDomain()
   ctx.provide('storageDomain', domain.service as never)
@@ -236,7 +254,8 @@ test('migrates a legacy premature binding while its live session is still blank'
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(AgentRegistry)
-  await ctx.plugin(ShioriRoleService, {
+  await pluginService(ctx, t, {
+    memoryRoot: await isolatedMemoryRoot(t),
     roles: [
       { id: 'maintainer', name: 'Maintainer', prompt: 'Maintainer prompt.' },
       { id: 'writer', name: 'Writer', prompt: 'Writer prompt.' },
@@ -256,14 +275,15 @@ test('migrates a legacy premature binding while its live session is still blank'
   await created.scope.dispose()
 })
 
-test('stores only attachment references in role assets and reads bytes through attachments', async () => {
+test('stores only attachment references in role assets and reads bytes through attachments', async t => {
   const ctx = new Context()
   const domain = memoryDomain()
   const attachments = attachmentService()
   ctx.provide('storageDomain', domain.service as never)
   ctx.provide('attachments', attachments.service as never)
   ctx.provide('workspaceRegistry', { resolveByPath: async () => undefined } as never)
-  await ctx.plugin(ShioriRoleService, {
+  await pluginService(ctx, t, {
+    memoryRoot: await isolatedMemoryRoot(t),
     roles: [{ id: 'maintainer', name: 'Maintainer', prompt: 'Prompt.' }],
   })
 
@@ -278,14 +298,15 @@ test('stores only attachment references in role assets and reads bytes through a
   assert.equal((await ctx.shioriRole.assetData(asset.id)).data, 'AQID')
 })
 
-test('imports configured roles only once so deleted seeds do not reappear', async () => {
+test('imports configured roles only once so deleted seeds do not reappear', async t => {
   const domain = memoryDomain()
+  const memoryRoot = await isolatedMemoryRoot(t)
   const start = async () => {
     const ctx = new Context()
     ctx.provide('storageDomain', domain.service as never)
     ctx.provide('attachments', attachmentService().service as never)
     ctx.provide('workspaceRegistry', { resolveByPath: async () => undefined } as never)
-    await ctx.plugin(ShioriRoleService, { roles: [{ id: 'seed', name: 'Seed', prompt: 'Seed prompt.' }] })
+    await pluginService(ctx, t, { roles: [{ id: 'seed', name: 'Seed', prompt: 'Seed prompt.' }], memoryRoot })
     return ctx
   }
   const first = await start()
@@ -294,13 +315,14 @@ test('imports configured roles only once so deleted seeds do not reappear', asyn
   assert.deepEqual((await second.shioriRole.catalogSnapshot()).roles, [])
 })
 
-test('reassigns mutable references when their role is deleted', async () => {
+test('reassigns mutable references when their role is deleted', async t => {
   const ctx = new Context()
   const domain = memoryDomain()
   ctx.provide('storageDomain', domain.service as never)
   ctx.provide('attachments', attachmentService().service as never)
   ctx.provide('workspaceRegistry', { resolveByPath: async () => undefined } as never)
-  await ctx.plugin(ShioriRoleService, {
+  await pluginService(ctx, t, {
+    memoryRoot: await isolatedMemoryRoot(t),
     roles: [
       { id: 'maintainer', name: 'Maintainer', prompt: 'Maintainer prompt.' },
       { id: 'temporary', name: 'Temporary', prompt: 'Temporary prompt.' },
@@ -320,13 +342,14 @@ test('reassigns mutable references when their role is deleted', async () => {
   assert.equal((await ctx.shioriRole.sessionSnapshot('blank-session')).pendingRoleId, 'maintainer')
 })
 
-test('soft-deletes roles retained by immutable sessions', async () => {
+test('soft-deletes roles retained by immutable sessions', async t => {
   const ctx = new Context()
   const domain = memoryDomain()
   ctx.provide('storageDomain', domain.service as never)
   ctx.provide('attachments', attachmentService().service as never)
   ctx.provide('workspaceRegistry', { resolveByPath: async () => undefined } as never)
-  await ctx.plugin(ShioriRoleService, {
+  await pluginService(ctx, t, {
+    memoryRoot: await isolatedMemoryRoot(t),
     roles: [
       { id: 'maintainer', name: 'Maintainer', prompt: 'Maintainer prompt.' },
       { id: 'writer', name: 'Writer', prompt: 'Writer prompt.' },
@@ -407,6 +430,261 @@ test('extracts durable memories after a completed turn when extraction is config
   } finally {
     if (serviceFiber !== undefined) await serviceFiber.dispose()
     restore()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('extracts durable memories through the current Harness model by default', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shiori-role-harness-extraction-'))
+  let serviceFiber: Awaited<ReturnType<Context['plugin']>> | undefined
+  try {
+    const ctx = new Context()
+    const domain = memoryDomain()
+    const requests: GenerateOptions[] = []
+    ctx.provide('storageDomain', domain.service as never)
+    ctx.provide('attachments', attachmentService().service as never)
+    ctx.provide('workspaceRegistry', {
+      list: () => [{ id: 'workspace-a', path: 'C:\\workspace' }],
+      resolveByPath: async () => ({ id: 'workspace-a' }),
+    } as never)
+    ctx.provide('llm', {
+      async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+        requests.push(options)
+        const text = options.system?.includes('新创建的角色')
+          ? '# 我是谁\n\n## 我的性格与形象\n- 我是一个安静的角色。\n\n## 我对你的理解\n- 我还在认识你。\n\n## 我们的关系\n- 我们刚刚相遇。'
+          : JSON.stringify({
+            profile: [],
+            preference: [{ summary: '用户偏好安静的工作环境', emotional_weight: 3 }],
+            procedure: [],
+          })
+        yield { type: 'block-start', index: 0, blockType: 'text' }
+        yield { type: 'text-delta', index: 0, text }
+        yield { type: 'block-end', index: 0, block: { type: 'text', text } }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      },
+    } as never)
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(AgentRegistry)
+    serviceFiber = await ctx.plugin(ShioriRoleService, {
+      roles: [{ id: 'maintainer', name: 'Maintainer', prompt: 'Maintainer prompt.' }],
+      memoryRoot: root,
+    })
+    await ctx.shioriRole.select('workspace-a' as never, 'maintainer')
+
+    const created = await agent(ctx, 'session-harness-extract', 'C:\\workspace')
+    const dispose = ctx.agents.register(created.agent)
+    const initialAssembly = await ctx.systemPrompt.assemble({ agent: created.agent, scope: created.agent })
+    const initialPrompt = renderPrompt(initialAssembly)
+
+    const session = created.agent.session as Session
+    session.append('turn/start', { turn: 1 })
+    session.append('user/message', {
+      id: 'u-harness', role: 'user', content: [{ type: 'text', text: '我工作时喜欢安静' }], source: { kind: 'user' },
+    }, { surfaceOp: 'append' })
+    session.append('assistant/message', {
+      turn: 1, step: 1,
+      message: {
+        id: 'a-harness', role: 'assistant', content: [{ type: 'text', text: '我会记住。' }],
+        source: { kind: 'model', provider: 'deepseek', model: 'deepseek-chat' },
+      },
+    }, { surfaceOp: 'append' })
+
+    await agentEvents(ctx, created.agent).serial('agent/turn-stopping', {
+      turn: 1,
+      signal: new AbortController().signal,
+    })
+
+    assert.equal(requests.length, 2)
+    const extractionRequest = requests.find(request => request.system?.includes('长期记忆提取器'))
+    assert.ok(extractionRequest)
+    assert.equal(extractionRequest.provider, 'deepseek')
+    assert.equal(extractionRequest.model, 'deepseek-chat')
+    assert.match(extractionRequest.system ?? '', /长期记忆提取器/)
+    assert.match(String(extractionRequest.messages[0]?.content[0]?.type === 'text'
+      ? extractionRequest.messages[0].content[0].text
+      : ''), /喜欢安静/)
+    assert.equal(session.events.some(event =>
+      event.type === 'shiori-role/memory-extraction-request'
+      && event.data.turn === 1
+      && event.data.roleId === 'maintainer'
+      && event.data.route.provider === 'deepseek'), true)
+    const recalled = await ctx.shioriRole.memory().recall('maintainer')
+    assert.equal(
+      recalled.some(item => item.summary === '用户偏好安静的工作环境'),
+      true,
+      JSON.stringify(recalled),
+    )
+    const updatedAssembly = await ctx.systemPrompt.assemble({ agent: created.agent, scope: created.agent })
+    assert.notEqual(renderPrompt(updatedAssembly), initialPrompt)
+    assert.match(renderPrompt(updatedAssembly), /我们刚刚相遇/)
+    assert.equal(updatedAssembly.contexts.some(context => context.text.includes('用户偏好安静的工作环境')), true)
+
+    dispose()
+    await created.scope.dispose()
+  } finally {
+    if (serviceFiber !== undefined) await serviceFiber.dispose()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('generates SELF.md when a newly created role first enters an LLM-backed session', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'shiori-role-self-seed-session-'))
+  let serviceFiber: Awaited<ReturnType<Context['plugin']>> | undefined
+  try {
+    const ctx = new Context()
+    const domain = memoryDomain()
+    const requests: GenerateOptions[] = []
+    ctx.provide('storageDomain', domain.service as never)
+    ctx.provide('attachments', attachmentService().service as never)
+    ctx.provide('workspaceRegistry', {
+      list: () => [{ id: 'workspace-a', path: 'C:\\workspace' }],
+      resolveByPath: async () => ({ id: 'workspace-a' }),
+    } as never)
+    ctx.provide('llm', {
+      async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+        requests.push(options)
+        const text = '# 我是谁\n\n## 我的性格与形象\n- 我是吟风。\n\n## 我对你的理解\n- 我还在认识你。\n\n## 我们的关系\n- 我们刚刚相遇。'
+        yield { type: 'block-start', index: 0, blockType: 'text' }
+        yield { type: 'text-delta', index: 0, text }
+        yield { type: 'block-end', index: 0, block: { type: 'text', text } }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      },
+    } as never)
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(AgentRegistry)
+    serviceFiber = await ctx.plugin(ShioriRoleService, {
+      roles: [{ id: 'new-role', name: 'New role', prompt: 'You are a new role.' }],
+      memoryRoot: root,
+    })
+    await ctx.shioriRole.select('workspace-a' as never, 'new-role')
+
+    const created = await agent(ctx, 'session-self-seed', 'C:\\workspace')
+    Object.assign(created.agent.options, { provider: 'deepseek', model: 'deepseek-chat' })
+    const dispose = ctx.agents.register(created.agent)
+    const session = created.agent.session as Session
+    session.append('turn/start', { turn: 1 })
+    await agentEvents(ctx, created.agent).serial('agent/turn-stopping', {
+      turn: 1,
+      signal: new AbortController().signal,
+    })
+    const prompt = renderPrompt(await ctx.systemPrompt.assemble({ agent: created.agent, scope: created.agent }))
+
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0]?.provider, 'deepseek')
+    assert.equal(requests[0]?.model, 'deepseek-chat')
+    assert.match(requests[0]?.system ?? '', /新创建的角色生成首版 SELF\.md/)
+    assert.match(prompt, /我们刚刚相遇/)
+    dispose()
+    await created.scope.dispose()
+  } finally {
+    if (serviceFiber !== undefined) await serviceFiber.dispose()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('maintains the complete Shiori Markdown and SQLite layers after successful compaction', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shiori-role-compaction-'))
+  let serviceFiber: Awaited<ReturnType<Context['plugin']>> | undefined
+  try {
+    const ctx = new Context()
+    const domain = memoryDomain()
+    const requests: GenerateOptions[] = []
+    ctx.provide('storageDomain', domain.service as never)
+    ctx.provide('attachments', attachmentService().service as never)
+    ctx.provide('workspaceRegistry', {
+      list: () => [{ id: 'workspace-a', path: 'C:\\workspace' }],
+      resolveByPath: async () => ({ id: 'workspace-a' }),
+    } as never)
+    ctx.provide('llm', {
+      async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+        requests.push(options)
+        const text = options.system?.includes('Markdown 记忆提取器')
+          ? JSON.stringify({
+            history_entries: [{ summary: '[2026-08-14 20:00] 你和我确认要直接沿用 Shiori 的 SELF.md 维护方式。', emotional_weight: 4 }],
+            pending_items: [{ tag: 'preference', content: '你重视角色关系记忆的连续维护。' }],
+          })
+          : options.system?.includes('长期记忆整理器')
+            ? '# 我的长期记忆\n\n## 关于你\n\n## 你的偏好\n- 你重视角色关系记忆的连续维护。\n\n## 你希望我记住的事'
+            : options.system?.includes('SELF.md')
+              ? '# 我是谁\n\n## 我的性格与形象\n- 我是维护记忆的角色。\n\n## 我对你的理解\n- 我知道你重视关系记忆的连续维护。\n\n## 我们的关系\n- 我们共同维护这份连续记忆。'
+              : JSON.stringify({
+                active_topics: ['你在维护 Shiori 的角色记忆'],
+                user_preferences: [], follow_ups: [], avoidances: [], ongoing_threads: [],
+              })
+        yield { type: 'block-start', index: 0, blockType: 'text' }
+        yield { type: 'text-delta', index: 0, text }
+        yield { type: 'block-end', index: 0, block: { type: 'text', text } }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      },
+    } as never)
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(AgentRegistry)
+    serviceFiber = await ctx.plugin(ShioriRoleService, {
+      roles: [{ id: 'maintainer', name: 'Maintainer', prompt: 'Maintainer prompt.' }],
+      memoryRoot: root,
+    })
+    await ctx.shioriRole.select('workspace-a' as never, 'maintainer')
+
+    const created = await agent(ctx, 'session-compaction', 'C:\\workspace')
+    const dispose = ctx.agents.register(created.agent)
+    renderPrompt(await ctx.systemPrompt.assemble({ agent: created.agent, scope: created.agent }))
+    const session = created.agent.session as Session
+    session.append('turn/start', { turn: 1 })
+    const user = session.append('user/message', {
+      id: 'u-compaction', role: 'user', content: [{ type: 'text', text: 'SELF.md 直接沿用 Shiori 的维护方式。' }], source: { kind: 'user' },
+    }, { surfaceOp: 'append' })
+    const assistant = session.append('assistant/message', {
+      turn: 1, step: 1,
+      message: { id: 'a-compaction', role: 'assistant', content: [{ type: 'text', text: '明白。' }], source: { kind: 'model', provider: 'deepseek', model: 'deepseek-chat' } },
+    }, { surfaceOp: 'append' })
+    const compactionId = 'compaction-test' as never
+    session.append('compaction/start', { compactionId, turn: null })
+    session.append('compaction/summary', {
+      compactionId,
+      summary: [{ type: 'text', text: 'summary' }],
+      shadowedRange: { start: user.seq, end: assistant.seq },
+      shadowedSeqs: [user.seq, assistant.seq],
+      shadowedTokenCount: 20,
+      provider: 'deepseek',
+      model: 'deepseek-chat',
+    })
+    const ended = session.append('compaction/end', { compactionId, turn: null })
+    ctx.emit('session/event', session, ended)
+
+    await waitFor(async () => (await ctx.shioriRole.memory().recall('maintainer'))
+      .some(item => item.kind === 'event' && item.summary.includes('沿用 Shiori')), 4000)
+    const memoryDir = join(root, 'shiori-plugin', 'role', 'maintainer', 'memory')
+    await waitFor(async () => (await readFile(join(memoryDir, 'SELF.md'), 'utf8'))
+      .includes('共同维护这份连续记忆'), 4000)
+    assert.match(await readFile(join(memoryDir, 'HISTORY.md'), 'utf8'), /直接沿用 Shiori/)
+    assert.match(await readFile(join(memoryDir, 'MEMORY.md'), 'utf8'), /连续维护/)
+    assert.equal((await readFile(join(memoryDir, 'PENDING.md'), 'utf8')).trim(), '# 待整理的记忆')
+    assert.match(await readFile(join(memoryDir, 'RECENT_CONTEXT.md'), 'utf8'), /维护 Shiori 的角色记忆/)
+    assert.equal((await ctx.shioriRole.memory().recall('maintainer'))
+      .some(item => item.kind === 'preference' && item.summary.includes('连续维护')), true)
+    const assembly = await ctx.systemPrompt.assemble({ agent: created.agent, scope: created.agent })
+    assert.equal(assembly.contexts.some(context => context.text.includes('我的长期记忆')), true)
+    assert.equal(assembly.contexts.some(context => context.text.includes('最近发生的事')), true)
+    assert.equal(assembly.contexts.some(context => context.text.includes('## 最近的对话')), false)
+    assert.equal(requests.length, 4)
+    assert.deepEqual(
+      session.events
+        .filter(event => event.type === 'shiori-role/semantic-maintenance-request')
+        .map(event => event.type === 'shiori-role/semantic-maintenance-request' ? event.data.purpose : ''),
+      ['consolidation', 'memory-merge', 'self-update', 'recent-context'],
+    )
+
+    ctx.emit('session/event', session, ended)
+    await new Promise(resolve => setTimeout(resolve, 50))
+    assert.equal(requests.length, 4)
+
+    dispose()
+    await created.scope.dispose()
+  } finally {
+    if (serviceFiber !== undefined) await serviceFiber.dispose()
     await rm(root, { recursive: true, force: true })
   }
 })

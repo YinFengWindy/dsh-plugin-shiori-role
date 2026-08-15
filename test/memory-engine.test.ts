@@ -5,10 +5,23 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DefaultMemoryEngine } from '../src/memory-engine/engine.ts'
 import { Embedder, ChatClient } from '../src/memory-engine/llm.ts'
-import { ShioriMemoryStore } from '../src/memory-engine/store.ts'
+import { ShioriMemoryStore, resolveMemoryDbPath } from '../src/memory-engine/store.ts'
 import { resolveMemoryConfig } from '../src/memory-engine/config.ts'
 
 const EMBEDDING_ENDPOINT = { endpoint: 'https://embedding.test/v1', apiKey: 'k', model: 'test-embed' }
+
+test('resolves SQLite storage exclusively inside the role directory', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shiori-role-path-'))
+  try {
+    assert.equal(
+      resolveMemoryDbPath(root, 'yin-feng'),
+      join(root, 'shiori-plugin', 'role', 'yin-feng', 'memory', 'memory2.db'),
+    )
+    assert.throws(() => resolveMemoryDbPath(root, '../shared'), /invalid role id/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
 
 function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } })

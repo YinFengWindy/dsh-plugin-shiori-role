@@ -1,6 +1,7 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type {} from '@deepseek-ai/dsh-compaction/types'
 import type { ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
 import { PERSONA_ORDER, PERSONA_SECTION } from '@deepseek-ai/dsh-system-prompt'
@@ -25,6 +26,7 @@ import type {
   RoleAssetView,
   RoleCatalogSnapshot,
   SaveRoleInput,
+  SelectThemeBackgroundInput,
   SessionRoleSnapshot,
   ShioriRoleDefinition,
   ShioriRoleView,
@@ -37,11 +39,17 @@ import type {
 import type { RoleMemoryScope } from './memory-contract.ts'
 import { DuplicateRoleError, UnknownRoleError } from './registry.ts'
 import type { MemoryEmbeddingConfig, MemoryExtractionConfig } from './memory.ts'
+import type { MemoryChatClient } from './memory-engine/llm.ts'
 import { DefaultMemoryEngine } from './memory-engine/engine.ts'
 import { ChatClient, Embedder } from './memory-engine/llm.ts'
+import { HarnessMemoryChatClient, HarnessSemanticChatClient, resolveHarnessRoute } from './memory-engine/harness-chat.ts'
 import { ShioriMemoryStore, resolveMemoryDbPath } from './memory-engine/store.ts'
 import { resolveMemoryConfig } from './memory-engine/config.ts'
-import { applyMemoryTools } from './memory-engine/tools.ts'
+import { applyMemoryTools, type MemoryToolsEngine } from './memory-engine/tools.ts'
+import { DEFAULT_SELF_MD, RoleFiles } from './role-files.ts'
+import { RoleSelfMemory } from './self-memory.ts'
+import { MarkdownMemory } from './markdown-memory.ts'
+import { consolidateRecentContext, consolidateSemantics } from './semantic-consolidation.ts'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -54,18 +62,17 @@ declare module '@deepseek-ai/cordis' {
 const CATALOG_MARKER = 'initialized'
 const CONFIG_KEY = 'config'
 const PRIMARY_ASSET_PURPOSES = new Set<RoleAssetPurpose>(['avatar', 'portrait', 'theme_background'])
+const MARKDOWN_MEMORY_CONTEXT_ORDER = 35
 
 /** Service configuration. Roles are imported once as editable catalog seeds. */
 export interface Config {
   readonly roles: readonly ShioriRoleDefinition[]
-  /** Optional global DSH data root; role memory is shared across DSH workspaces. */
+  /** Optional global DSH data root; each role owns its directory across DSH workspaces. */
   readonly memoryRoot?: string
-  /** Optional semantic memory layer: embedding retrieval, supersede, and post-turn extraction. */
+  /** Optional embedding endpoint and post-turn extraction endpoint override. */
   readonly memory?: {
     readonly embedding?: MemoryEmbeddingConfig
     readonly extraction?: MemoryExtractionConfig
-    /** Optional SQLite database path; defaults to `<memoryRoot>/shiori-plugin/role/memory2.db`. */
-    readonly dbPath?: string
   }
 }
 
@@ -82,12 +89,26 @@ export class ShioriRoleService extends TypertRemoteService {
   private catalogTable?: KvTable<string, RoleCatalogRecord>
   private memoryTable?: KvTable<string, StoredRoleMemoryRecord>
   private memoryConfigTable?: KvTable<string, MemoryConfigRecord>
-  private memoryStore?: ShioriMemoryStore
-  private memoryEngine?: DefaultMemoryEngine
+  private readonly roleFiles: RoleFiles
+  private readonly selfMemory: RoleSelfMemory
+  private readonly markdownMemory: MarkdownMemory
+  private readonly memoryStores = new Map<string, ShioriMemoryStore>()
+  private readonly memoryEngines = new Map<string, DefaultMemoryEngine>()
+  private readonly memoryToolsEngine: MemoryToolsEngine = {
+    query: request => this.requireMemoryEngine(scopeRoleId(request.scope)).query(request),
+    mutate: request => this.requireMemoryEngine(scopeRoleId(request.scope)).mutate(request),
+    contextText: scope => this.requireMemoryEngine(scopeRoleId(scope)).contextText(scope),
+  }
   private readonly boundRoles = new Map<SessionIdType, string>()
+  private readonly semanticJobs = new Set<string>()
+  private readonly roleMaintenanceTails = new Map<string, Promise<void>>()
+  private readonly selfSeedJobs = new Map<string, Promise<void>>()
 
   constructor(ctx: Context, readonly config: Config) {
     super(ctx, 'shioriRole')
+    this.roleFiles = new RoleFiles(resolveMemoryRoot(config.memoryRoot))
+    this.selfMemory = new RoleSelfMemory(this.roleFiles)
+    this.markdownMemory = new MarkdownMemory(this.roleFiles)
   }
 
   protected async [Service.init](): Promise<void> {
@@ -102,22 +123,33 @@ export class ShioriRoleService extends TypertRemoteService {
     this.memoryTable = this.domain.table('memories')
     this.memoryConfigTable = this.domain.table('memory_config')
     await this.initializeCatalog()
-    const effective = this.effectiveMemoryConfig()
-    const memoryStore = new ShioriMemoryStore(
-      resolveMemoryDbPath(resolveMemoryRoot(this.config.memoryRoot), this.config.memory?.dbPath),
-    )
-    this.memoryStore = memoryStore
-    this.ctx.effect(() => () => { memoryStore.close() }, 'shioriRole.memoryStoreClose')
-    this.memoryEngine = new DefaultMemoryEngine({
-      store: memoryStore,
-      ...(effective.embedding === undefined ? {} : { embedder: new Embedder(effective.embedding) }),
-      ...(effective.extraction === undefined ? {} : { chat: new ChatClient(effective.extraction) }),
-      config: { retrieval: resolveMemoryConfig() },
-    })
+    this.ctx.effect(() => () => {
+      for (const store of this.memoryStores.values()) store.close()
+      this.memoryStores.clear()
+      this.memoryEngines.clear()
+    }, 'shioriRole.memoryStoresClose')
+    for (const role of this.list()) this.roleFiles.writeRoleDefinition(role)
     this.ctx.inject(['agents', 'systemPrompt', 'tools'], (runtimeCtx) => {
       for (const agent of runtimeCtx.agents.list()) this.mountAgent(agent)
       runtimeCtx.on('agent/created', ({ agent }) => { this.mountAgent(agent) })
       runtimeCtx.on('agent/disposed', ({ agent }) => { this.boundRoles.delete(agent.session.id) })
+      runtimeCtx.on('session/event', (session, event) => {
+        if (event.type !== 'compaction/end' || event.data.error !== undefined) return
+        const agent = runtimeCtx.agents.get(session.id)
+        if (agent === undefined) return
+        const summaryEvent = [...session.events].reverse().find(candidate =>
+          candidate.type === 'compaction/summary' && candidate.data.compactionId === event.data.compactionId,
+        )
+        if (summaryEvent?.type !== 'compaction/summary') return
+        const roleId = this.requireSessionTable().get(session.id)?.roleId ?? this.boundRoles.get(session.id)
+        if (roleId === undefined) return
+        const jobKey = `${String(session.id)}:${String(event.data.compactionId)}`
+        if (this.semanticJobs.has(jobKey)) return
+        this.semanticJobs.add(jobKey)
+        void this.enqueueRoleMaintenance(roleId, () => this.maintainCompactedMemory(agent, roleId, summaryEvent)).catch(error => {
+          this.ctx.logger.error(`shiori-role: semantic consolidation failed for '${jobKey}': ${String(error)}`)
+        }).finally(() => { this.semanticJobs.delete(jobKey) })
+      })
     })
   }
 
@@ -158,6 +190,8 @@ export class ShioriRoleService extends TypertRemoteService {
       createdAt: current?.createdAt ?? now,
       updatedAt: now,
     })
+    const role = { id, name, introduction, prompt, createdAt: current?.createdAt ?? now, updatedAt: now }
+    this.roleFiles.writeRoleDefinition(role)
     return this.catalogSnapshot()
   }
 
@@ -182,6 +216,7 @@ export class ShioriRoleService extends TypertRemoteService {
         if (row.roleId === roleId) await this.requireMemoryTable().delete(key)
       }
       this.forgetRoleMemory(roleId)
+      this.roleFiles.removeRoleDefinition(roleId)
     }
     for (const [key, row] of this.requirePendingTable().entries()) {
       if (row.roleId !== roleId) continue
@@ -228,6 +263,34 @@ export class ShioriRoleService extends TypertRemoteService {
     return this.catalogSnapshot()
   }
 
+  /** Promote one gallery asset to the role's single theme background (previous one returns to the gallery). */
+  @Remote('selectThemeBackground')
+  async selectThemeBackground(input: SelectThemeBackgroundInput): Promise<RoleCatalogSnapshot> {
+    this.requireActiveRole(input.roleId)
+    const asset = this.requireAssetTable().get(input.assetId)
+    if (asset === undefined || asset.roleId !== input.roleId) throw new Error(`shiori-role: unknown asset '${input.assetId}'`)
+    if (asset.purpose !== 'gallery') throw new Error('shiori-role: only gallery assets can become a theme background')
+    for (const [key, row] of this.requireAssetTable().entries()) {
+      if (row.roleId === input.roleId && row.purpose === 'theme_background') {
+        await this.requireAssetTable().put(key, { ...row, purpose: 'gallery' })
+      }
+    }
+    await this.requireAssetTable().put(input.assetId, { ...asset, purpose: 'theme_background' })
+    return this.catalogSnapshot()
+  }
+
+  /** Return the role's theme background to the gallery. */
+  @Remote('clearThemeBackground')
+  async clearThemeBackground(roleId: string): Promise<RoleCatalogSnapshot> {
+    this.requireActiveRole(roleId)
+    for (const [key, row] of this.requireAssetTable().entries()) {
+      if (row.roleId === roleId && row.purpose === 'theme_background') {
+        await this.requireAssetTable().put(key, { ...row, purpose: 'gallery' })
+      }
+    }
+    return this.catalogSnapshot()
+  }
+
   /** Read verified attachment bytes for browser display. */
   @Remote('assetData')
   async assetData(assetId: string): Promise<RoleAssetData> {
@@ -269,7 +332,7 @@ export class ShioriRoleService extends TypertRemoteService {
       updatedAt: new Date().toISOString(),
     }
     await this.requireMemoryConfigTable().put(CONFIG_KEY, record)
-    this.memoryEngine?.updateLlm(
+    for (const engine of this.memoryEngines.values()) engine.updateLlm(
       record.embedding === undefined ? undefined : new Embedder(record.embedding),
       record.extraction === undefined ? undefined : new ChatClient(record.extraction),
     )
@@ -354,7 +417,7 @@ export class ShioriRoleService extends TypertRemoteService {
     if (sessionRoleId === undefined) await this.commitSessionRole(agent.session.id, resolved.id)
     await agentCtx.plugin(applyRolePlugin, resolved satisfies RolePluginConfig)
     const memoryPlugin = Object.assign(
-      (inner: Context) => applyMemoryTools(inner, this.requireMemoryEngine(), resolved.id),
+      (inner: Context) => applyMemoryTools(inner, this.memoryToolsEngine, resolved.id),
       { inject: ['systemPrompt', 'tools'] },
     )
     await agentCtx.plugin(memoryPlugin)
@@ -364,31 +427,44 @@ export class ShioriRoleService extends TypertRemoteService {
 
   /** Access role memory after initialization. */
   memory(): DefaultMemoryEngine {
-    return this.requireMemoryEngine()
+    const role = this.list()[0]
+    if (role === undefined) throw new Error('shiori-role: no role is configured')
+    return this.requireMemoryEngine(role.id)
   }
 
   private async initializeCatalog(): Promise<void> {
-    if (this.requireCatalogTable().get(CATALOG_MARKER) !== undefined) return
-    const seen = new Set<string>()
-    const now = new Date().toISOString()
-    for (const seed of this.config.roles) {
-      const id = seed.id.trim()
-      if (!id) throw new Error('Shiori role id must not be empty')
-      if (seen.has(id)) throw new DuplicateRoleError(id)
-      seen.add(id)
-      const name = seed.name.trim()
-      const prompt = seed.prompt.trim()
-      if (!name) throw new Error(`Shiori role '${id}' name must not be empty`)
-      if (!prompt) throw new Error(`Shiori role '${id}' prompt must not be empty`)
-      await this.requireRoleTable().put(id, {
-        name,
-        introduction: seed.introduction?.trim() ?? '',
-        prompt,
-        createdAt: now,
-        updatedAt: now,
+    if (this.requireCatalogTable().get(CATALOG_MARKER) === undefined) {
+      const seen = new Set<string>()
+      const now = new Date().toISOString()
+      for (const seed of this.config.roles) {
+        const id = seed.id.trim()
+        if (!id) throw new Error('Shiori role id must not be empty')
+        if (seen.has(id)) throw new DuplicateRoleError(id)
+        seen.add(id)
+        const name = seed.name.trim()
+        const prompt = seed.prompt.trim()
+        if (!name) throw new Error(`Shiori role '${id}' name must not be empty`)
+        if (!prompt) throw new Error(`Shiori role '${id}' prompt must not be empty`)
+        await this.requireRoleTable().put(id, {
+          name,
+          introduction: seed.introduction?.trim() ?? '',
+          prompt,
+          createdAt: now,
+          updatedAt: now,
+        })
+      }
+      await this.requireCatalogTable().put(CATALOG_MARKER, { initializedAt: now })
+    }
+    for (const role of this.roleFiles.listRoleDefinitions()) {
+      if (this.requireRoleTable().get(role.id) !== undefined) continue
+      await this.requireRoleTable().put(role.id, {
+        name: role.name,
+        introduction: role.introduction,
+        prompt: role.prompt,
+        createdAt: role.createdAt,
+        updatedAt: role.updatedAt,
       })
     }
-    await this.requireCatalogTable().put(CATALOG_MARKER, { initializedAt: now })
   }
 
   private roleViews(includeRoleId?: string): ShioriRoleView[] {
@@ -455,29 +531,38 @@ export class ShioriRoleService extends TypertRemoteService {
     agent.ctx.systemPrompt.section({
       name: PERSONA_SECTION,
       order: PERSONA_ORDER,
-      text: () => resolveRole().prompt,
+      text: () => {
+        const role = resolveRole()
+        return `${role.prompt}\n\n${this.selfMemory.read(role.id)}`
+      },
     })
-    applyMemoryTools(agent.ctx, this.requireMemoryEngine(), () => {
+    agent.ctx.systemPrompt.context({
+      name: 'shiori-role:markdown-memory',
+      order: MARKDOWN_MEMORY_CONTEXT_ORDER,
+      text: () => this.markdownMemory.context(resolveRole().id),
+    })
+    applyMemoryTools(agent.ctx, this.memoryToolsEngine, () => {
       const role = resolveRole()
       return { roleId: role.id, sessionKey: String(agent.session.id) } satisfies RoleMemoryScope
     })
-    agent.ctx.on('agent/turn-stopping', ({ turn }) => {
-      if (this.config.memory?.extraction === undefined) return
+    agent.ctx.on('agent/turn-stopping', async ({ turn, signal }) => {
       const role = resolveRole()
+      await this.seedSelfOnFirstSession(agent, role, turn)
       const transcript = turnTranscript(agent, turn)
       if (!transcript) return
-      void this.requireMemoryEngine().ingest({
+      const configuredExtraction = this.effectiveMemoryConfig().extraction
+      const harnessChat = configuredExtraction === undefined && this.ctx.get('llm') !== undefined
+        ? new HarnessMemoryChatClient(this.ctx, agent, turn, role.id, signal)
+        : undefined
+      const result = await this.requireMemoryEngine(role.id).ingest({
         content: transcript,
         sourceKind: 'conversation_turn',
         scope: { roleId: role.id, sessionKey: String(agent.session.id) },
         metadata: { source_ref: `turn:${turn}` },
-      }).then(result => {
-          if (!result.accepted) {
-          this.ctx.logger.warn(`shiori-role: post-turn extraction skipped: ${result.summary ?? 'unknown'}`)
-        }
-      }).catch(error => {
-          this.ctx.logger.warn(`shiori-role: post-turn extraction failed: ${String(error)}`)
-      })
+      }, harnessChat)
+      if (!result.accepted) {
+        this.ctx.logger.warn(`shiori-role: post-turn extraction skipped: ${result.summary ?? 'unknown'}`)
+      }
     })
     const stored = this.requireSessionTable().get(agent.session.id)
     if (stored !== undefined) this.boundRoles.set(agent.session.id, stored.roleId)
@@ -486,6 +571,101 @@ export class ShioriRoleService extends TypertRemoteService {
   private async commitSessionRole(sessionId: SessionIdType, roleId: string): Promise<void> {
     await this.requireSessionTable().put(sessionId, { roleId, boundAt: new Date().toISOString(), bindingVersion: 2 })
     await this.requirePendingTable().delete(sessionId)
+  }
+
+  private async seedSelfOnFirstSession(agent: Agent, role: ShioriRoleDefinition, turn: number): Promise<void> {
+    if (this.roleFiles.readSelf(role.id).trim() !== DEFAULT_SELF_MD.trim()) return
+    const existing = this.selfSeedJobs.get(role.id)
+    if (existing !== undefined) return existing
+    const chat = this.resolveSelfSeedChat(role.id, agent, turn)
+    if (chat === undefined) return
+    const job = this.selfMemory.seed(role, chat).then(() => undefined).catch(error => {
+      this.ctx.logger.warn(`shiori-role: SELF.md seed failed for '${role.id}': ${String(error)}`)
+    }).finally(() => { this.selfSeedJobs.delete(role.id) })
+    this.selfSeedJobs.set(role.id, job)
+    return job
+  }
+
+  private resolveSelfSeedChat(roleId: string, agent: Agent, turn: number): MemoryChatClient | undefined {
+    const configured = this.effectiveMemoryConfig().extraction
+    if (configured !== undefined) return new ChatClient(configured)
+    if (this.ctx.get('llm') === undefined) return undefined
+    try {
+      return new HarnessSemanticChatClient(
+        this.ctx,
+        agent,
+        roleId,
+        'self-seed',
+        resolveHarnessRoute(agent, turn),
+      )
+    } catch {
+      return undefined
+    }
+  }
+
+  private async maintainCompactedMemory(
+    agent: Agent,
+    roleId: string,
+    summaryEvent: Extract<Agent['session']['events'][number], { type: 'compaction/summary' }>,
+  ): Promise<void> {
+    const sourceRef = `${String(agent.session.id)}@compaction:${String(summaryEvent.data.compactionId)}`
+    const engine = this.requireMemoryEngine(roleId)
+    if (engine.isCompactionComplete(sourceRef)) return
+    const conversation = compactedTranscript(agent, summaryEvent.data.shadowedSeqs)
+    if (!conversation) return
+    const configured = this.effectiveMemoryConfig().extraction
+    const route = { provider: summaryEvent.data.provider, model: summaryEvent.data.model }
+    const consolidationChat = configured === undefined
+      ? new HarnessSemanticChatClient(this.ctx, agent, roleId, 'consolidation', route, summaryEvent.seq)
+      : new ChatClient(configured)
+    const result = await consolidateSemantics(conversation, this.roleFiles.readMemory(roleId), consolidationChat)
+    this.markdownMemory.appendCompaction(roleId, sourceRef, result.events, result.pending)
+    await engine.ingestConsolidationEvents(roleId, sourceRef, result.events)
+    await engine.ingestConsolidationCandidates(roleId, sourceRef, result.candidates)
+
+    const pending = this.markdownMemory.snapshotPending(roleId)
+    if (pending) {
+      try {
+        const memoryChat = configured === undefined
+          ? new HarnessSemanticChatClient(this.ctx, agent, roleId, 'memory-merge', route, summaryEvent.seq)
+          : new ChatClient(configured)
+        if (!await this.markdownMemory.mergePending(roleId, pending, memoryChat)) {
+          throw new Error('shiori-role: MEMORY.md optimizer produced no content')
+        }
+        const selfChat = configured === undefined
+          ? new HarnessSemanticChatClient(this.ctx, agent, roleId, 'self-update', route, summaryEvent.seq)
+          : new ChatClient(configured)
+        if (!await this.selfMemory.update(roleId, pending, selfChat)) {
+          throw new Error('shiori-role: SELF.md optimizer produced no content')
+        }
+        this.markdownMemory.commitPending(roleId)
+      } catch (error) {
+        this.markdownMemory.rollbackPending(roleId)
+        throw error
+      }
+    }
+
+    const recentChat = configured === undefined
+      ? new HarnessSemanticChatClient(this.ctx, agent, roleId, 'recent-context', route, summaryEvent.seq)
+      : new ChatClient(configured)
+    this.markdownMemory.writeRecentContext(roleId, await consolidateRecentContext({
+      previous: this.markdownMemory.readRecentContext(roleId),
+      conversation,
+      recentTurns: recentSurfaceTurns(agent),
+      until: compactedUntil(agent, summaryEvent.data.shadowedSeqs),
+    }, recentChat))
+    engine.markCompactionCompleted(sourceRef)
+  }
+
+  private async enqueueRoleMaintenance(roleId: string, task: () => Promise<void>): Promise<void> {
+    const previous = this.roleMaintenanceTails.get(roleId) ?? Promise.resolve()
+    const current = previous.catch(() => undefined).then(task)
+    this.roleMaintenanceTails.set(roleId, current)
+    try {
+      await current
+    } finally {
+      if (this.roleMaintenanceTails.get(roleId) === current) this.roleMaintenanceTails.delete(roleId)
+    }
   }
 
   private isLiveBlankSession(sessionId: SessionIdType): boolean {
@@ -524,21 +704,38 @@ export class ShioriRoleService extends TypertRemoteService {
     return this.catalogTable
   }
 
-  private requireMemoryEngine(): DefaultMemoryEngine {
-    if (this.memoryEngine === undefined) throw new Error('shiori-role: service is not started')
-    return this.memoryEngine
+  private requireMemoryEngine(roleId: string): DefaultMemoryEngine {
+    const id = roleId.trim()
+    if (!id) throw new Error('shiori-role: role id is required for memory')
+    const existing = this.memoryEngines.get(id)
+    if (existing !== undefined) return existing
+    const effective = this.effectiveMemoryConfig()
+    const store = new ShioriMemoryStore(
+      resolveMemoryDbPath(resolveMemoryRoot(this.config.memoryRoot), id),
+    )
+    const engine = new DefaultMemoryEngine({
+      store,
+      ...(effective.embedding === undefined ? {} : { embedder: new Embedder(effective.embedding) }),
+      ...(effective.extraction === undefined ? {} : { chat: new ChatClient(effective.extraction) }),
+      config: { retrieval: resolveMemoryConfig() },
+    })
+    this.memoryStores.set(id, store)
+    this.memoryEngines.set(id, engine)
+    return engine
   }
 
-  private requireMemoryStore(): ShioriMemoryStore {
-    if (this.memoryStore === undefined) throw new Error('shiori-role: service is not started')
-    return this.memoryStore
+  private requireMemoryStore(roleId: string): ShioriMemoryStore {
+    this.requireMemoryEngine(roleId)
+    const store = this.memoryStores.get(roleId)
+    if (store === undefined) throw new Error('shiori-role: service is not started')
+    return store
   }
 
   /** 物理删除一个角色的全部记忆（角色被删除时调用）。 */
   private forgetRoleMemory(roleId: string): void {
-    const { items } = this.requireMemoryStore().listItemsForAdmin({ roleId, pageSize: 200 })
+    const { items } = this.requireMemoryStore(roleId).listItemsForAdmin({ roleId, pageSize: 200 })
     const ids = items.map(item => String(item.id)).filter(Boolean)
-    if (ids.length > 0) this.requireMemoryStore().deleteItemsBatch(ids)
+    if (ids.length > 0) this.requireMemoryStore(roleId).deleteItemsBatch(ids)
   }
 
   private requireMemoryTable(): KvTable<string, StoredRoleMemoryRecord> {
@@ -554,6 +751,10 @@ export class ShioriRoleService extends TypertRemoteService {
 
 function resolveMemoryRoot(configured?: string): string {
   return configured?.trim() || process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
+}
+
+function scopeRoleId(scope: string | { readonly roleId?: string } | undefined): string {
+  return typeof scope === 'string' ? scope : scope?.roleId ?? ''
 }
 
 /** 校验并规整端点配置（endpoint / model 必填）。 */
@@ -585,6 +786,65 @@ function turnTranscript(agent: Agent, turn: number): string {
     }
   }
   return lines.join('\n')
+}
+
+/** Format the exact surface events shadowed by one successful compaction. */
+function compactedTranscript(agent: Agent, shadowedSeqs: readonly number[]): string {
+  const selected = new Set(shadowedSeqs)
+  const lines: string[] = []
+  for (const event of agent.session.events) {
+    if (!selected.has(event.seq)) continue
+    const timestamp = formatMessageTime(event.time)
+    if (event.type === 'user/message' && event.data.source.kind === 'user') {
+      const text = messageText(event.data.content)
+      if (text) lines.push(`[${timestamp}] USER: ${text}`)
+    } else if (event.type === 'assistant/message') {
+      const text = messageText(event.data.message.content)
+      if (text) lines.push(`[${timestamp}] ASSISTANT: ${text}`)
+    }
+  }
+  return lines.join('\n')
+}
+
+function recentSurfaceTurns(agent: Agent): string {
+  const lines: string[] = []
+  for (const seq of agent.session.surface.nodes) {
+    const event = agent.session.events[seq]
+    if (event?.type === 'user/message' && event.data.source.kind === 'user') {
+      const text = messageText(event.data.content)
+      if (text) lines.push(`[user] ${text}`)
+    } else if (event?.type === 'assistant/message') {
+      const text = messageText(event.data.message.content)
+      if (text) lines.push(`[a-preview] ${text.slice(0, 300)}`)
+    }
+  }
+  return lines.slice(-6).join('\n')
+}
+
+function compactedUntil(agent: Agent, shadowedSeqs: readonly number[]): string {
+  const times = shadowedSeqs.flatMap(seq => {
+    const event = agent.session.events[seq]
+    return event === undefined ? [] : [event.time]
+  })
+  return times.length === 0 ? '' : formatShanghaiTimestamp(Math.max(...times))
+}
+
+function formatShanghaiTimestamp(value: number): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).formatToParts(new Date(value))
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find(item => item.type === type)?.value ?? '00'
+  return `${part('year')}-${part('month')}-${part('day')}T${part('hour')}:${part('minute')}:${part('second')}+08:00`
+}
+
+function formatMessageTime(value: number): string {
+  return new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(new Date(value)).replace(' ', ' ')
 }
 
 /** Concatenate the visible text blocks of one message. */

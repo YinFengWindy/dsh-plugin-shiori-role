@@ -9,6 +9,8 @@ import type { JsonValue } from '@deepseek-ai/dsh-tools'
 import type { RoleMemoryDomain, RoleMemoryScope } from '../memory-contract.ts'
 import type { DefaultMemoryEngine } from './engine.ts'
 
+export type MemoryToolsEngine = Pick<DefaultMemoryEngine, 'query' | 'mutate' | 'contextText'>
+
 const MEMORY_OUTPUT = {
   schema: { type: 'json' as const },
   render: (_args: unknown, value: unknown) => [{
@@ -63,7 +65,7 @@ function parseTimeFilter(value: string): { timeStart?: string; timeEnd?: string 
 /** Mount role memory tools and a current-memory context into an Agent scope. */
 export function applyMemoryTools(
   ctx: Context,
-  engine: DefaultMemoryEngine,
+  engine: MemoryToolsEngine,
   input: string | RoleMemoryScope | (() => RoleMemoryScope),
 ): void {
   const scope = () => normalizedScope(input)

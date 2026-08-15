@@ -21,6 +21,11 @@ export interface ChatOptions {
   readonly timeoutMs?: number
 }
 
+/** Minimal chat surface accepted by the memory engine. */
+export interface MemoryChatClient {
+  chat(messages: readonly ChatMessage[], options?: ChatOptions): Promise<string>
+}
+
 /** 简易 AbortSignal 超时封装（兼容非 Promise 值）。 */
 function withTimeout<T>(promise: Promise<T> | T, timeoutMs: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -33,7 +38,7 @@ function withTimeout<T>(promise: Promise<T> | T, timeoutMs: number, label: strin
 }
 
 /** OpenAI 兼容 chat completions 客户端。 */
-export class ChatClient {
+export class ChatClient implements MemoryChatClient {
   private readonly url: string
 
   constructor(private readonly config: LlmEndpointConfig) {

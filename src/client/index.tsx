@@ -15,12 +15,12 @@ const NS = 'shiori.role'
 
 const dictionaries = {
   en: {
-    tab: 'Roles', loading: 'Loading...', create: 'Create role', createTitle: 'Create role', editTitle: 'Edit role', close: 'Close', delete: 'Delete', cancel: 'Cancel', save: 'Save', name: 'Name', introduction: 'Introduction', systemPrompt: 'System Prompt', avatar: 'Avatar', portrait: 'Standing illustration', assets: 'Asset library', fixedRole: 'This session role is fixed', chooseRole: 'Choose role',
-    memory: 'Memory', memoryHint: 'Semantic memory endpoints. Embedding powers vector retrieval and automatic supersede; extraction powers post-turn memory extraction. Leave an endpoint empty to disable it.', embedding: 'Embedding', extraction: 'Extraction', endpoint: 'Endpoint', model: 'Model', apiKey: 'API Key', saveMemory: 'Save memory config', memorySaved: 'Saved and applied.', memoryError: 'Failed to save memory config.',
+    tab: 'Roles', loading: 'Loading...', create: 'Create role', createTitle: 'Create role', editTitle: 'Edit role', close: 'Close', delete: 'Delete', cancel: 'Cancel', save: 'Save', name: 'Name', introduction: 'Introduction', systemPrompt: 'System Prompt', avatar: 'Avatar', portrait: 'Standing illustration', assets: 'Asset library', background: 'Background', currentBackground: 'Current chat background', setBackground: 'Set as background', removeBackground: 'Remove background', backgroundHint: 'Used as the chat background in conversations with this role.', fixedRole: 'This session role is fixed', chooseRole: 'Choose role',
+    memory: 'Memory', memorySummary: 'Semantic memory endpoints for roles.', memoryHint: 'Embedding enables vector retrieval, deduplication, and retiring superseded memories; extraction saves memories after each turn. Leave an endpoint empty to disable it.', embedding: 'Embedding', extraction: 'Extraction', endpoint: 'Endpoint', model: 'Model', apiKey: 'API Key', discard: 'Discard', unsaved: 'Unsaved',
   },
   zh: {
-    tab: '角色', loading: '加载中...', create: '创建角色', createTitle: '创建角色', editTitle: '编辑角色', close: '关闭', delete: '删除', cancel: '取消', save: '保存', name: '名称', introduction: '简介', systemPrompt: 'System Prompt', avatar: '头像', portrait: '立绘', assets: '素材库', fixedRole: '当前会话角色已固定', chooseRole: '选择角色',
-    memory: '记忆', memoryHint: '语义记忆层端点：embedding 用于向量检索与自动去重退休，extraction 用于回合后抽取。留空即禁用。', embedding: 'Embedding 端点', extraction: '抽取端点', endpoint: 'Endpoint', model: 'Model', apiKey: 'API Key', saveMemory: '保存记忆配置', memorySaved: '已保存并立即生效。', memoryError: '记忆配置保存失败。',
+    tab: '角色', loading: '加载中...', create: '创建角色', createTitle: '创建角色', editTitle: '编辑角色', close: '关闭', delete: '删除', cancel: '取消', save: '保存', name: '名称', introduction: '简介', systemPrompt: 'System Prompt', avatar: '头像', portrait: '立绘', assets: '素材库', background: '聊天背景', currentBackground: '当前聊天背景', setBackground: '设为背景', removeBackground: '移除背景', backgroundHint: '使用该角色的会话会以此图为聊天背景。', fixedRole: '当前会话角色已固定', chooseRole: '选择角色',
+    memory: '记忆', memorySummary: '角色的语义记忆层端点。', memoryHint: 'embedding 用于向量检索、自动去重与旧记忆淘汰；extraction 用于每轮对话后的记忆抽取。留空即禁用。', embedding: 'Embedding 端点', extraction: '抽取端点', endpoint: 'Endpoint', model: 'Model', apiKey: 'API Key', discard: '放弃修改', unsaved: '未保存',
   },
 }
 
@@ -48,6 +48,8 @@ interface ShioriRoleRemote {
   uploadAsset(input: Parameters<ClientContext['remote']['shioriRole']['uploadAsset']>[0]): ReturnType<ClientContext['remote']['shioriRole']['uploadAsset']>
   removeAsset(assetId: string): ReturnType<ClientContext['remote']['shioriRole']['removeAsset']>
   assetData(assetId: string): ReturnType<ClientContext['remote']['shioriRole']['assetData']>
+  selectThemeBackground(input: Parameters<ClientContext['remote']['shioriRole']['selectThemeBackground']>[0]): ReturnType<ClientContext['remote']['shioriRole']['selectThemeBackground']>
+  clearThemeBackground(roleId: string): ReturnType<ClientContext['remote']['shioriRole']['clearThemeBackground']>
   sessionSnapshot(sessionId: string): ReturnType<ClientContext['remote']['shioriRole']['sessionSnapshot']>
   stageSessionRole(sessionId: string, roleId: string): ReturnType<ClientContext['remote']['shioriRole']['stageSessionRole']>
   memoryConfigSnapshot(): ReturnType<ClientContext['remote']['shioriRole']['memoryConfigSnapshot']>
@@ -77,6 +79,8 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     uploadAsset: input => mutateCatalog(roleRemote.uploadAsset(input)),
     removeAsset: assetId => mutateCatalog(roleRemote.removeAsset(assetId)),
     assetData: assetId => unwrap(roleRemote.assetData(assetId)),
+    selectBackground: input => mutateCatalog(roleRemote.selectThemeBackground(input)),
+    clearBackground: roleId => mutateCatalog(roleRemote.clearThemeBackground(roleId)),
     session: sessionId => unwrap(roleRemote.sessionSnapshot(sessionId)),
     stage: (sessionId, roleId) => unwrap(roleRemote.stageSessionRole(sessionId, roleId)),
     memoryConfig: () => unwrap(roleRemote.memoryConfigSnapshot()),
@@ -114,7 +118,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     id: 'shiori-role-selector',
     order: 40,
     locale: NS,
-    inject: () => ({ api, ctx, t: roleText }),
+    inject: () => ({ api, t: roleText }),
   }, RoleSelector))
 
   return async () => {

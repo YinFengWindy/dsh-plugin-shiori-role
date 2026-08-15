@@ -56,7 +56,9 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
     "@deepseek-ai/dsh-agent": "*",
+    "@deepseek-ai/dsh-llm": "*",
     "@deepseek-ai/dsh-attachment": "*",
+    "@deepseek-ai/dsh-compaction": "*",
     "@deepseek-ai/dsh-session": "*",
     "@deepseek-ai/dsh-scope": "*",
     "@deepseek-ai/dsh-storage-domain": "*",
@@ -68,7 +70,9 @@
   "devDependencies": {
     "@deepseek-ai/cordis": "*",
     "@deepseek-ai/dsh-agent": "*",
+    "@deepseek-ai/dsh-llm": "*",
     "@deepseek-ai/dsh-attachment": "*",
+    "@deepseek-ai/dsh-compaction": "*",
     "@deepseek-ai/dsh-session": "*",
     "@deepseek-ai/dsh-scope": "*",
     "@deepseek-ai/dsh-storage-domain": "*",

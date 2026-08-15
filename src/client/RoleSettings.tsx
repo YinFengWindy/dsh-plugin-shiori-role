@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   Button,
+  IconCheckOutline16,
   IconPlusOutline16,
   IconTrashOutline16,
   IconUserOutline16,
@@ -16,6 +17,7 @@ import { primaryAsset, useAssetUrl } from './assets.ts'
 export type RoleLocaleKey =
   | 'tab' | 'loading' | 'create' | 'createTitle' | 'editTitle' | 'close' | 'delete' | 'cancel' | 'save'
   | 'name' | 'introduction' | 'systemPrompt' | 'avatar' | 'portrait' | 'assets'
+  | 'background' | 'currentBackground' | 'setBackground' | 'removeBackground' | 'backgroundHint'
   | 'fixedRole' | 'chooseRole'
 export type RoleText = (key: RoleLocaleKey) => string
 
@@ -45,22 +47,32 @@ function AssetPreview({ role, purpose, api }: { role: ShioriRoleView; purpose: R
   return url === undefined ? <IconUserOutline16 size={24} /> : <img src={url} alt="" />
 }
 
-function GalleryImage({ assetId, role, api, onRemove }: {
+function GalleryImage({ assetId, role, api, t, onRemove, onSelect }: {
   assetId: string
   role: ShioriRoleView
   api: RoleClientApi
+  t: RoleText
   onRemove: (assetId: string) => void
+  onSelect: (assetId: string) => void
 }) {
   const asset = role.assets.find(item => item.id === assetId)
   const url = useAssetUrl(api, asset)
   return (
     <div className="shiori-role-gallery__item">
       {url === undefined ? null : <img src={url} alt="" />}
+      <button type="button" className="shiori-role-gallery__select" aria-label={t('setBackground')} onClick={() => { onSelect(assetId) }}>
+        <IconCheckOutline16 size={14} />
+      </button>
       <button type="button" className="shiori-role-gallery__remove" aria-label="Remove" onClick={() => { onRemove(assetId) }}>
         <IconTrashOutline16 size={14} />
       </button>
     </div>
   )
+}
+
+function BackgroundPreview({ role, api }: { role: ShioriRoleView; api: RoleClientApi }) {
+  const url = useAssetUrl(api, role.assets.find(asset => asset.purpose === 'theme_background'))
+  return url === undefined ? <IconUserOutline16 size={24} /> : <img src={url} alt="" />
 }
 
 export function RoleSettings({ api, t }: RoleSettingsProps) {
@@ -176,12 +188,22 @@ export function RoleSettings({ api, t }: RoleSettingsProps) {
             <>
               <div className="shiori-role-media-row">
                 <label className="shiori-role-field"><span>{t('avatar')}</span><span className="shiori-role-upload"><AssetPreview role={editing} purpose="avatar" api={api} /><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" disabled={busy} onChange={event => { const file = event.currentTarget.files?.[0]; if (file !== undefined) void upload('avatar', file); event.currentTarget.value = '' }} /></span></label>
-                <label className="shiori-role-field"><span>{t('portrait')}</span><span className="shiori-role-upload"><AssetPreview role={editing} purpose="portrait" api={api} /><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" disabled={busy} onChange={event => { const file = event.currentTarget.files?.[0]; if (file !== undefined) void upload('portrait', file); event.currentTarget.value = '' }} /></span></label>
+                <label className="shiori-role-field"><span>{t('portrait')}</span><span className="shiori-role-upload shiori-role-upload--portrait"><AssetPreview role={editing} purpose="portrait" api={api} /><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" disabled={busy} onChange={event => { const file = event.currentTarget.files?.[0]; if (file !== undefined) void upload('portrait', file); event.currentTarget.value = '' }} /></span></label>
               </div>
               <div className="shiori-role-field">
                 <span>{t('assets')}</span>
+                {editing.assets.some(asset => asset.purpose === 'theme_background') ? (
+                  <div className="shiori-role-background">
+                    <span className="shiori-role-background__preview"><BackgroundPreview role={editing} api={api} /></span>
+                    <span className="shiori-role-background__copy">
+                      <span className="shiori-role-background__title">{t('currentBackground')}</span>
+                      <span className="shiori-role-background__hint">{t('backgroundHint')}</span>
+                      <button type="button" className="shiori-role-background__clear" disabled={busy} onClick={() => { void run(() => api.clearBackground(editing.id)) }}>{t('removeBackground')}</button>
+                    </span>
+                  </div>
+                ) : null}
                 <div className="shiori-role-gallery">
-                  {editing.assets.filter(asset => asset.purpose === 'gallery').map(asset => <GalleryImage key={asset.id} assetId={asset.id} role={editing} api={api} onRemove={assetId => { void run(() => api.removeAsset(assetId)) }} />)}
+                  {editing.assets.filter(asset => asset.purpose === 'gallery').map(asset => <GalleryImage key={asset.id} assetId={asset.id} role={editing} api={api} t={t} onRemove={assetId => { void run(() => api.removeAsset(assetId)) }} onSelect={assetId => { void run(() => api.selectBackground({ roleId: editing.id, assetId })) }} />)}
                   <label className="shiori-role-upload"><IconPlusOutline16 size={20} /><input type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif" disabled={busy} onChange={event => { const files = [...(event.currentTarget.files ?? [])]; void (async () => { for (const file of files) await upload('gallery', file) })(); event.currentTarget.value = '' }} /></label>
                 </div>
               </div>

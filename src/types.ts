@@ -72,6 +72,12 @@ export interface UploadRoleAssetInput {
   readonly name?: string
 }
 
+/** Promote one gallery asset to the role's single theme background. */
+export interface SelectThemeBackgroundInput {
+  readonly roleId: string
+  readonly assetId: string
+}
+
 /** Browser-readable immutable image payload. */
 export interface RoleAssetData {
   readonly asset: RoleAssetView

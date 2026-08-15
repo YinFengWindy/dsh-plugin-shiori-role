@@ -12,6 +12,8 @@ test('publishes strict role catalog, asset, and session Remote descriptors', () 
     'shioriRole/uploadAsset',
     'shioriRole/removeAsset',
     'shioriRole/assetData',
+    'shioriRole/selectThemeBackground',
+    'shioriRole/clearThemeBackground',
     'shioriRole/sessionSnapshot',
     'shioriRole/stageSessionRole',
     'shioriRole/memoryConfigSnapshot',

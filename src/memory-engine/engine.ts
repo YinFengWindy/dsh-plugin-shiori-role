@@ -23,9 +23,10 @@ import type {
   StoreHit,
 } from './contracts.ts'
 import type { DefaultMemoryConfig } from './config.ts'
-import { ChatClient, Embedder } from './llm.ts'
+import { Embedder, type MemoryChatClient } from './llm.ts'
 import { Retriever } from './retriever.ts'
 import { ShioriMemoryStore, coerceEmotionalWeight } from './store.ts'
+import type { ConsolidatedCandidate } from '../semantic-consolidation.ts'
 
 const ENGINE_NAME = 'default'
 const ENGINE_PROFILE = 'rich_memory_engine' as const
@@ -48,7 +49,7 @@ const EXTRACTION_MAX_TOKENS = 600
 export interface EngineDeps {
   readonly store: ShioriMemoryStore
   readonly embedder?: Embedder
-  readonly chat?: ChatClient
+  readonly chat?: MemoryChatClient
   readonly config: DefaultMemoryConfig
 }
 
@@ -62,7 +63,7 @@ export class DefaultMemoryEngine implements MemoryEngine {
   private readonly retriever: Retriever
   private readonly store: ShioriMemoryStore
   private embedder: Embedder | undefined
-  private chat: ChatClient | undefined
+  private chat: MemoryChatClient | undefined
 
   constructor(deps: EngineDeps) {
     this.store = deps.store
@@ -72,10 +73,85 @@ export class DefaultMemoryEngine implements MemoryEngine {
   }
 
   /** 热替换 LLM 客户端（前端保存记忆配置后调用），已挂载的 agent 立即生效。 */
-  updateLlm(embedder: Embedder | undefined, chat: ChatClient | undefined): void {
+  updateLlm(embedder: Embedder | undefined, chat: MemoryChatClient | undefined): void {
     this.embedder = embedder
     this.chat = chat
     this.retriever.setEmbedder(embedder)
+  }
+
+  /** Persist Shiori consolidation events with source-ref idempotency. */
+  async ingestConsolidationEvents(
+    roleId: string,
+    sourceRef: string,
+    events: readonly ConsolidationMemoryEvent[],
+  ): Promise<void> {
+    for (let index = 0; index < events.length; index += 1) {
+      const event = events[index]!
+      const entrySourceRef = `${sourceRef}#event:${index}`
+      if (this.store.hasConsolidationSourceRef(entrySourceRef)) continue
+      let embedding: number[] | undefined
+      if (this.embedder !== undefined) {
+        try {
+          embedding = await this.embedder.embed(event.summary)
+        } catch {
+          embedding = undefined
+        }
+      }
+      this.store.upsertConsolidationEvent({
+        sourceRef: entrySourceRef,
+        summary: event.summary,
+        ...(embedding === undefined ? {} : { embedding }),
+        emotionalWeight: event.emotionalWeight ?? 0,
+        extra: { role_id: roleId, memory_domain: 'shared' },
+      })
+    }
+  }
+
+  /** Persist compaction long-term candidates under stable per-entry source refs. */
+  async ingestConsolidationCandidates(
+    roleId: string,
+    sourceRef: string,
+    candidates: readonly ConsolidatedCandidate[],
+  ): Promise<void> {
+    for (let index = 0; index < candidates.length; index += 1) {
+      const candidate = candidates[index]!
+      const entrySourceRef = `${sourceRef}#long-term:${index}`
+      if (this.store.hasConsolidationLongTermRef(entrySourceRef)) continue
+      const profile = candidateProfile(candidate.tag)
+      const result = await this.mutate({
+        kind: 'remember',
+        scope: { roleId },
+        summary: candidate.content,
+        memoryKind: profile.memoryKind,
+        sourceRef: entrySourceRef,
+        metadata: { category: profile.category, consolidation_tag: candidate.tag },
+      })
+      this.store.markConsolidationLongTermRef(entrySourceRef, result.itemId)
+    }
+  }
+
+  isCompactionComplete(sourceRef: string): boolean {
+    return this.store.hasCompletedCompaction(sourceRef)
+  }
+
+  markCompactionCompleted(sourceRef: string): void {
+    this.store.markCompactionCompleted(sourceRef)
+  }
+
+  /** Build Shiori's bounded deduplication block from durable long-term items. */
+  longTermContext(roleId: string): string {
+    const { items } = this.store.listItemsForAdmin({
+      roleId,
+      status: 'active',
+      pageSize: 100,
+      sortBy: 'updated_at',
+      sortOrder: 'desc',
+    })
+    return items
+      .filter(item => ['profile', 'preference', 'procedure'].includes(String(item.memory_type)))
+      .map(item => `- [${String(item.memory_type)}] ${String(item.summary)}`)
+      .join('\n')
+      .slice(0, 6000)
   }
 
   // -------------------------------------------------------------------------
@@ -391,8 +467,8 @@ export class DefaultMemoryEngine implements MemoryEngine {
   // 回合后抽取（post_response_worker 的隐式抽取部分，砍掉 invalidation）
   // -------------------------------------------------------------------------
 
-  async ingest(request: MemoryIngestRequest): Promise<MemoryIngestResult> {
-    if (this.chat === undefined) {
+  async ingest(request: MemoryIngestRequest, chat: MemoryChatClient | undefined = this.chat): Promise<MemoryIngestResult> {
+    if (chat === undefined) {
       return { accepted: false, summary: 'chat client unavailable', raw: { reason: 'chat_unavailable' } }
     }
     if (request.sourceKind !== 'conversation_turn' && request.sourceKind !== 'conversation_batch') {
@@ -412,7 +488,7 @@ export class DefaultMemoryEngine implements MemoryEngine {
 
     const existingProfile = this.existingLongTermMemory(scope.roleId)
     try {
-      const content = await this.chat.chat(
+      const content = await chat.chat(
         [
           { role: 'system', content: EXTRACTION_SYSTEM_PROMPT },
           { role: 'user', content: extractionPrompt(conversation.slice(0, 12_000), existingProfile) },
@@ -504,6 +580,17 @@ export class DefaultMemoryEngine implements MemoryEngine {
 
   listEventsByTimeRange(timeStart: string, timeEnd: string, options: Parameters<MemoryEngine['listEventsByTimeRange']>[2] = {}): ReturnType<MemoryEngine['listEventsByTimeRange']> {
     return this.store.listEventsByTimeRange(timeStart, timeEnd, options)
+  }
+}
+
+function candidateProfile(tag: ConsolidatedCandidate['tag']): { memoryKind: 'profile' | 'preference'; category: string } {
+  switch (tag) {
+    case 'preference': return { memoryKind: 'preference', category: 'preference' }
+    case 'correction': return { memoryKind: 'profile', category: 'status' }
+    case 'requested_memory': return { memoryKind: 'profile', category: 'decision' }
+    case 'identity':
+    case 'key_info':
+    case 'health_long_term': return { memoryKind: 'profile', category: 'personal_fact' }
   }
 }
 
@@ -619,6 +706,11 @@ export interface ExtractedMemory {
   readonly category?: string
   readonly toolRequirement?: string
   readonly steps?: readonly string[]
+}
+
+export interface ConsolidationMemoryEvent {
+  readonly summary: string
+  readonly emotionalWeight?: number
 }
 
 const EXTRACTION_SYSTEM_PROMPT = '你是中性的长期记忆提取器，不扮演角色，也不生成用户可见回复。'
