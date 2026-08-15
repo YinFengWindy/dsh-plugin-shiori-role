@@ -298,6 +298,27 @@ test('bypasses role prompt and memory tools when a session uses no role', async 
   await created.scope.dispose()
 })
 
+test('compose bypasses the plugin when no role is selected', async t => {
+  const ctx = new Context()
+  const domain = memoryDomain()
+  ctx.provide('storageDomain', domain.service as never)
+  ctx.provide('attachments', attachmentService().service as never)
+  ctx.provide('workspaceRegistry', { list: () => [], resolveByPath: async () => undefined } as never)
+  await ctx.plugin(SystemPrompt)
+  await ctx.plugin(ToolRuntime)
+  await ctx.plugin(AgentRegistry)
+  await pluginService(ctx, t, {
+    memoryRoot: await isolatedMemoryRoot(t),
+    roles: [{ id: 'optional-role', name: 'Optional', prompt: 'Optional role prompt.' }],
+  })
+
+  const created = await agent(ctx, 'session-compose-without-role', 'C:\\workspace')
+  const dispose = ctx.agents.register(created.agent)
+  assert.equal(await ctx.shioriRole.compose(created.agent.ctx), undefined)
+  dispose()
+  await created.scope.dispose()
+})
+
 test('inherits the parent role when a child Agent is created', async t => {
   const ctx = new Context()
   const domain = memoryDomain()

@@ -7,7 +7,7 @@ import { useRoleTheme } from './theme.ts'
 import type { RoleText } from './RoleSettings.tsx'
 
 interface RoleSelectorProps {
-  readonly session: { readonly sessionId: string; readonly blank: boolean }
+  readonly session: { readonly sessionId: string }
   readonly api: RoleClientApi
   readonly t: RoleText
 }
@@ -35,7 +35,10 @@ export function RoleSelector({ session, api, t }: RoleSelectorProps) {
   const themeAsset = role === undefined ? undefined : (primaryAsset(role, 'theme_background') ?? primaryAsset(role, 'portrait'))
   const themeUrl = useAssetUrl(api, themeAsset)
   useRoleTheme(role, themeUrl)
-  const locked = snapshot?.locked === true || !session.blank
+  // The host snapshot is authoritative. The client session summary can lag
+  // while a newly created workspace session is being projected, and must not
+  // hide the selector when the server still reports the session as mutable.
+  const locked = snapshot?.locked === true
   const items = useMemo(() => snapshot?.roles.map(item => ({
     id: item.id,
     label: item.name,

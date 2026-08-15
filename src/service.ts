@@ -418,7 +418,7 @@ export class ShioriRoleService extends TypertRemoteService {
   }
 
   /** Compose a fixed role into an unpublished Agent scope. */
-  async compose(agentCtx: Context, roleId?: string): Promise<ShioriRoleDefinition> {
+  async compose(agentCtx: Context, roleId?: string): Promise<ShioriRoleDefinition | undefined> {
     const agent = scopeOf(agentCtx) as Agent | undefined
     if (agent === undefined || agent.session === undefined) throw new Error('shiori-role: compose requires an Agent scope')
     const sessionRoleId = this.requireSessionTable().get(agent.session.id)?.roleId
@@ -427,7 +427,9 @@ export class ShioriRoleService extends TypertRemoteService {
     }
     const pendingRoleId = sessionRoleId === undefined ? this.requirePendingTable().get(agent.session.id)?.roleId : undefined
     const workspaceRole = sessionRoleId === undefined && pendingRoleId === undefined ? await this.resolveWorkspaceRole(agent) : undefined
-    const resolved = this.requireRole(roleId ?? sessionRoleId ?? pendingRoleId ?? workspaceRole?.id ?? '')
+    const resolvedId = roleId ?? sessionRoleId ?? pendingRoleId ?? workspaceRole?.id
+    if (resolvedId === undefined) return undefined
+    const resolved = this.requireRole(resolvedId)
     if (sessionRoleId === undefined) await this.commitSessionRole(agent.session.id, resolved.id)
     await agentCtx.plugin(applyRolePlugin, resolved satisfies RolePluginConfig)
     const memoryPlugin = Object.assign(
