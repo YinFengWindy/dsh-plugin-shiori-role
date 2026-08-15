@@ -146,6 +146,14 @@ export class ShioriRoleService extends TypertRemoteService {
         this.memoryToolSessions.delete(agent.session.id)
       })
       runtimeCtx.on('session/event', (session, event) => {
+        if (event.type === 'assistant/message') {
+          const agent = runtimeCtx.agents.get(session.id)
+          const roleId = this.requireSessionTable().get(session.id)?.roleId ?? this.boundRoles.get(session.id)
+          if (agent !== undefined && roleId !== undefined && !this.deletedRoles.has(roleId)) {
+            const role = this.get(roleId)
+            if (role !== undefined) void this.seedSelfOnFirstSession(agent, role, event.data.turn)
+          }
+        }
         if (event.type !== 'compaction/end' || event.data.error !== undefined) return
         const agent = runtimeCtx.agents.get(session.id)
         if (agent === undefined) return
