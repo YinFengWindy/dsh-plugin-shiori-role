@@ -4,6 +4,7 @@ declare module 'node:fs' {
   export function readFileSync(path: string, encoding: 'utf8'): string
   export function readdirSync(path: string, options: { withFileTypes: true }): Array<{ name: string; isDirectory(): boolean }>
   export function renameSync(oldPath: string, newPath: string): void
+  export function rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void
   export function unlinkSync(path: string): void
   export function writeFileSync(path: string, data: string, encoding: 'utf8'): void
 }

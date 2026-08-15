@@ -40,9 +40,11 @@ dependencies:
 
 `ShioriRoleService` stores editable roles, assets, workspace defaults, pending blank-session selections, and immutable session bindings in the `shiori_role` storage domain.
 
-Creating a blank Agent does not lock its role. The composer stages a pending selection, while the persona provider and memory tools resolve that selection dynamically. The first System Prompt assembly commits the role with binding version 2 before model execution continues. Existing version-1 bindings are migrated back to pending only when the live Agent log proves the session is still blank. Sessions with user messages or started turns never migrate or hot-switch.
+The composer may stage a role before a blank Agent is created. A blank Agent remains selectable until its first System Prompt assembly; the plugin then resolves and persists the pending or workspace role before model execution continues. Existing version-1 bindings remain immutable once a session has used them, and non-blank sessions never hot-switch.
 
-Deleting a role removes it from the editable catalog and future-session selectors. If an immutable session already uses it, the plugin keeps a tombstone with its Prompt, assets, and memory so that resumed session remains reconstructable. Mutable pending and workspace references are reassigned to the earliest remaining role, and every client surface refreshes from the same catalog mutation signal.
+Deleting a role is a physical deletion: its catalog record, session bindings, assets references, Markdown files, and role-owned SQLite memory2 database are removed. Existing sessions no longer restore that role. Mutable pending and workspace references are reassigned to the earliest remaining role, and every client surface refreshes from the same catalog mutation signal.
+
+When a deleted role owns local content-addressed image attachments, the plugin removes an attachment object only when no remaining role asset references the same `sha256:` object. Shared objects and non-local attachment backends are left intact; this GC does not scan message or session-history references outside the role catalog.
 
 ## Assets And Theme
 

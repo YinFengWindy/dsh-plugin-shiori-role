@@ -52,6 +52,7 @@ import { MarkdownMemory } from './markdown-memory.ts'
 import { consolidateRecentContext, consolidateSemantics } from './semantic-consolidation.ts'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { rmSync } from 'node:fs'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -103,6 +104,8 @@ export class ShioriRoleService extends TypertRemoteService {
   private readonly semanticJobs = new Set<string>()
   private readonly roleMaintenanceTails = new Map<string, Promise<void>>()
   private readonly selfSeedJobs = new Map<string, Promise<void>>()
+  private readonly provisionalRoles = new Map<SessionIdType, string>()
+  private readonly deletedRoles = new Set<string>()
 
   constructor(ctx: Context, readonly config: Config) {
     super(ctx, 'shioriRole')
@@ -132,7 +135,10 @@ export class ShioriRoleService extends TypertRemoteService {
     this.ctx.inject(['agents', 'systemPrompt', 'tools'], (runtimeCtx) => {
       for (const agent of runtimeCtx.agents.list()) this.mountAgent(agent)
       runtimeCtx.on('agent/created', ({ agent }) => { this.mountAgent(agent) })
-      runtimeCtx.on('agent/disposed', ({ agent }) => { this.boundRoles.delete(agent.session.id) })
+      runtimeCtx.on('agent/disposed', ({ agent }) => {
+        this.boundRoles.delete(agent.session.id)
+        this.provisionalRoles.delete(agent.session.id)
+      })
       runtimeCtx.on('session/event', (session, event) => {
         if (event.type !== 'compaction/end' || event.data.error !== undefined) return
         const agent = runtimeCtx.agents.get(session.id)
@@ -143,6 +149,7 @@ export class ShioriRoleService extends TypertRemoteService {
         if (summaryEvent?.type !== 'compaction/summary') return
         const roleId = this.requireSessionTable().get(session.id)?.roleId ?? this.boundRoles.get(session.id)
         if (roleId === undefined) return
+        if (this.deletedRoles.has(roleId)) return
         const jobKey = `${String(session.id)}:${String(event.data.compactionId)}`
         if (this.semanticJobs.has(jobKey)) return
         this.semanticJobs.add(jobKey)
@@ -195,29 +202,37 @@ export class ShioriRoleService extends TypertRemoteService {
     return this.catalogSnapshot()
   }
 
-  /** Delete an unbound role, its assets, and repair mutable role references. */
+  /** Physically delete a role and repair all remaining mutable references. */
   @Remote('deleteRole')
   async deleteRole(roleId: string): Promise<RoleCatalogSnapshot> {
     const current = this.requireRoleTable().get(roleId)
     if (current === undefined) throw new UnknownRoleError(roleId)
-    const usedBySession = [...this.requireSessionTable().entries()].some(([, row]) => row.roleId === roleId)
     const replacement = this.roleViews().find(role => role.id !== roleId)
     const updatedAt = new Date().toISOString()
-    if (usedBySession) {
-      // Preserve immutable session snapshots while hiding the role from
-      // mutable catalogs and future-session selectors.
-      await this.requireRoleTable().put(roleId, { ...current, deletedAt: updatedAt })
-    } else {
-      await this.requireRoleTable().delete(roleId)
-      for (const [key, row] of this.requireAssetTable().entries()) {
-        if (row.roleId === roleId) await this.requireAssetTable().delete(key)
-      }
-      for (const [key, row] of this.requireMemoryTable().entries()) {
-        if (row.roleId === roleId) await this.requireMemoryTable().delete(key)
-      }
-      this.forgetRoleMemory(roleId)
-      this.roleFiles.removeRoleDefinition(roleId)
+    const attachmentIds = [...this.requireAssetTable().entries()]
+      .filter(([, row]) => row.roleId === roleId)
+      .map(([, row]) => String(row.attachment.attachmentId))
+    this.deletedRoles.add(roleId)
+    await Promise.all([
+      this.roleMaintenanceTails.get(roleId)?.catch(() => undefined),
+      this.selfSeedJobs.get(roleId)?.catch(() => undefined),
+    ])
+    await this.requireRoleTable().delete(roleId)
+    for (const [key, row] of this.requireSessionTable().entries()) {
+      if (row.roleId === roleId) await this.requireSessionTable().delete(key)
     }
+    for (const [sessionId, role] of this.boundRoles.entries()) {
+      if (role === roleId) this.boundRoles.delete(sessionId)
+    }
+    for (const [key, row] of this.requireAssetTable().entries()) {
+      if (row.roleId === roleId) await this.requireAssetTable().delete(key)
+    }
+    this.collectOrphanAttachments(attachmentIds)
+    for (const [key, row] of this.requireMemoryTable().entries()) {
+      if (row.roleId === roleId) await this.requireMemoryTable().delete(key)
+    }
+    this.disposeRoleMemory(roleId)
+    this.roleFiles.deleteRole(roleId)
     for (const [key, row] of this.requirePendingTable().entries()) {
       if (row.roleId !== roleId) continue
       if (replacement === undefined) await this.requirePendingTable().delete(key)
@@ -358,13 +373,12 @@ export class ShioriRoleService extends TypertRemoteService {
     const sessionId = SessionId(rawSessionId)
     const committed = this.requireSessionTable().get(sessionId)
     const pending = committed === undefined ? this.requirePendingTable().get(sessionId)?.roleId : undefined
-    const blank = this.isLiveBlankSession(sessionId)
     return {
       sessionId: rawSessionId,
       roles: this.roleViews(committed?.roleId),
       ...(committed === undefined ? {} : { roleId: committed.roleId }),
       ...(pending === undefined ? {} : { pendingRoleId: pending }),
-      locked: committed !== undefined && (committed.bindingVersion >= 2 || !blank),
+      locked: committed !== undefined,
     }
   }
 
@@ -374,15 +388,7 @@ export class ShioriRoleService extends TypertRemoteService {
     const sessionId = SessionId(rawSessionId)
     this.requireActiveRole(roleId)
     const stored = this.requireSessionTable().get(sessionId)
-    let committed = stored?.roleId ?? this.boundRoles.get(sessionId)
-    if (stored !== undefined && stored.bindingVersion < 2 && this.isLiveBlankSession(sessionId)) {
-      // Version-one bound workspace defaults at blank-Agent creation. A live
-      // empty log proves that no model output used that identity, so it is
-      // safe to migrate the row back to a mutable pending selection.
-      await this.requireSessionTable().delete(sessionId)
-      this.boundRoles.delete(sessionId)
-      committed = undefined
-    }
+    const committed = stored?.roleId ?? this.boundRoles.get(sessionId)
     if (committed !== undefined) {
       if (committed !== roleId) throw new Error(`shiori-role: session '${rawSessionId}' is already bound to '${committed}'`)
       return this.sessionSnapshot(rawSessionId)
@@ -456,7 +462,16 @@ export class ShioriRoleService extends TypertRemoteService {
       await this.requireCatalogTable().put(CATALOG_MARKER, { initializedAt: now })
     }
     for (const role of this.roleFiles.listRoleDefinitions()) {
-      if (this.requireRoleTable().get(role.id) !== undefined) continue
+      const existing = this.requireRoleTable().get(role.id)
+      if (existing !== undefined) {
+        if (
+          existing.deletedAt === undefined
+          && existing.name === role.name
+          && existing.introduction === role.introduction
+          && existing.prompt === role.prompt
+        ) continue
+        throw new DuplicateRoleError(role.id)
+      }
       await this.requireRoleTable().put(role.id, {
         name: role.name,
         introduction: role.introduction,
@@ -499,22 +514,46 @@ export class ShioriRoleService extends TypertRemoteService {
     return workspace === undefined ? undefined : this.active(workspace.id)
   }
 
-  /** Mount a dynamic role boundary; a blank session commits only on first prompt assembly. */
+  /** Mount a role boundary; blank sessions commit only when their first prompt is assembled. */
   private mountAgent(agent: Agent): void {
     if (this.boundRoles.has(agent.session.id)) return
+    const runtimeParent = this.ctx.get('agents')?.list().find(candidate => this.ctx.get('agents')?.isOwnedBy(agent.id, candidate))
+    const parentSessionId = agent.session.header.parentSession ?? runtimeParent?.session.id
+    const parentAgent = parentSessionId === undefined ? undefined : this.ctx.get('agents')?.get(parentSessionId)
+    const parentWorkspace = parentAgent?.session.header.cwd === undefined
+      ? undefined
+      : this.ctx.workspaceRegistry.list().find(item => item.path === parentAgent.session.header.cwd)
+    const parentWorkspaceRole = parentWorkspace === undefined
+      ? undefined
+      : this.requireWorkspaceTable().get(String(parentWorkspace.id))?.roleId
+    const parentRoleId = parentSessionId === undefined
+      ? undefined
+      : this.requireSessionTable().get(parentSessionId)?.roleId
+        ?? this.boundRoles.get(parentSessionId)
+        ?? this.provisionalRoles.get(parentSessionId)
+        ?? this.requirePendingTable().get(parentSessionId)?.roleId
+        ?? parentWorkspaceRole
+    if (parentSessionId !== undefined && parentRoleId === undefined) {
+      throw new Error(`shiori-role: parent session '${String(parentSessionId)}' has no bound role`)
+    }
     const workspace = agent.session.header.cwd === undefined
       ? undefined
       : this.ctx.workspaceRegistry.list().find(item => item.path === agent.session.header.cwd)
+    const initialStored = this.requireSessionTable().get(agent.session.id)
+    const initialPending = initialStored === undefined ? this.requirePendingTable().get(agent.session.id)?.roleId : undefined
+    const initialSelected = workspace === undefined ? undefined : this.requireWorkspaceTable().get(String(workspace.id))?.roleId
+    const initialRole = this.requireRole(initialStored?.roleId ?? parentRoleId ?? initialPending ?? initialSelected ?? '')
+    this.provisionalRoles.set(agent.session.id, initialRole.id)
     let bindingReady = Promise.resolve()
     let bindingStarted = false
     const resolveRole = (): ShioriRoleDefinition => {
-      const stored = this.requireSessionTable().get(agent.session.id)
-      const pending = stored === undefined ? this.requirePendingTable().get(agent.session.id) : undefined
-      const selected = stored === undefined && pending === undefined && workspace !== undefined
-        ? this.requireWorkspaceTable().get(String(workspace.id))
+      const current = this.requireSessionTable().get(agent.session.id)
+      const currentPending = current === undefined ? this.requirePendingTable().get(agent.session.id)?.roleId : undefined
+      const selected = current === undefined && currentPending === undefined && workspace !== undefined
+        ? this.requireWorkspaceTable().get(String(workspace.id))?.roleId
         : undefined
-      const role = this.requireRole(stored?.roleId ?? pending?.roleId ?? selected?.roleId ?? '')
-      if (stored === undefined && !bindingStarted) {
+      const role = this.requireRole(current?.roleId ?? parentRoleId ?? currentPending ?? selected ?? initialRole.id)
+      if (current === undefined && !bindingStarted) {
         bindingStarted = true
         bindingReady = this.commitSessionRole(agent.session.id, role.id)
         void bindingReady.catch(error => {
@@ -533,13 +572,13 @@ export class ShioriRoleService extends TypertRemoteService {
       order: PERSONA_ORDER,
       text: () => {
         const role = resolveRole()
-        return `${role.prompt}\n\n${this.selfMemory.read(role.id)}`
+        return `${role.prompt}\n\n${this.readRoleSelf(role.id)}`
       },
     })
     agent.ctx.systemPrompt.context({
       name: 'shiori-role:markdown-memory',
       order: MARKDOWN_MEMORY_CONTEXT_ORDER,
-      text: () => this.markdownMemory.context(resolveRole().id),
+      text: () => this.readRoleMarkdownContext(resolveRole().id),
     })
     applyMemoryTools(agent.ctx, this.memoryToolsEngine, () => {
       const role = resolveRole()
@@ -547,6 +586,7 @@ export class ShioriRoleService extends TypertRemoteService {
     })
     agent.ctx.on('agent/turn-stopping', async ({ turn, signal }) => {
       const role = resolveRole()
+      if (this.deletedRoles.has(role.id)) return
       await this.seedSelfOnFirstSession(agent, role, turn)
       const transcript = turnTranscript(agent, turn)
       if (!transcript) return
@@ -564,8 +604,6 @@ export class ShioriRoleService extends TypertRemoteService {
         this.ctx.logger.warn(`shiori-role: post-turn extraction skipped: ${result.summary ?? 'unknown'}`)
       }
     })
-    const stored = this.requireSessionTable().get(agent.session.id)
-    if (stored !== undefined) this.boundRoles.set(agent.session.id, stored.roleId)
   }
 
   private async commitSessionRole(sessionId: SessionIdType, roleId: string): Promise<void> {
@@ -668,12 +706,6 @@ export class ShioriRoleService extends TypertRemoteService {
     }
   }
 
-  private isLiveBlankSession(sessionId: SessionIdType): boolean {
-    const agent = this.ctx.get('agents')?.get(sessionId)
-    if (agent === undefined) return false
-    return !agent.session.events.some(event => event.type === 'user/message' || event.type === 'turn/start')
-  }
-
   private requireWorkspaceTable(): KvTable<string, WorkspaceRoleRecord> {
     if (this.workspaceTable === undefined) throw new Error('shiori-role: service is not started')
     return this.workspaceTable
@@ -707,6 +739,7 @@ export class ShioriRoleService extends TypertRemoteService {
   private requireMemoryEngine(roleId: string): DefaultMemoryEngine {
     const id = roleId.trim()
     if (!id) throw new Error('shiori-role: role id is required for memory')
+    if (this.deletedRoles.has(id) || this.requireRoleTable().get(id) === undefined) throw new UnknownRoleError(id)
     const existing = this.memoryEngines.get(id)
     if (existing !== undefined) return existing
     const effective = this.effectiveMemoryConfig()
@@ -724,18 +757,40 @@ export class ShioriRoleService extends TypertRemoteService {
     return engine
   }
 
-  private requireMemoryStore(roleId: string): ShioriMemoryStore {
-    this.requireMemoryEngine(roleId)
+  private disposeRoleMemory(roleId: string): void {
+    this.memoryEngines.delete(roleId)
     const store = this.memoryStores.get(roleId)
-    if (store === undefined) throw new Error('shiori-role: service is not started')
-    return store
+    if (store !== undefined) {
+      store.close()
+      this.memoryStores.delete(roleId)
+    }
+    rmSync(resolveMemoryDbPath(resolveMemoryRoot(this.config.memoryRoot), roleId), { force: true })
   }
 
-  /** 物理删除一个角色的全部记忆（角色被删除时调用）。 */
-  private forgetRoleMemory(roleId: string): void {
-    const { items } = this.requireMemoryStore(roleId).listItemsForAdmin({ roleId, pageSize: 200 })
-    const ids = items.map(item => String(item.id)).filter(Boolean)
-    if (ids.length > 0) this.requireMemoryStore(roleId).deleteItemsBatch(ids)
+  /** Best-effort GC for local role assets; unknown backends remain untouched. */
+  private collectOrphanAttachments(attachmentIds: readonly string[]): void {
+    if (attachmentIds.length === 0) return
+    const stillReferenced = new Set<string>()
+    for (const [, row] of this.requireAssetTable().entries()) {
+      stillReferenced.add(String(row.attachment.attachmentId))
+    }
+    const root = resolveMemoryRoot(undefined)
+    for (const attachmentId of new Set(attachmentIds)) {
+      if (stillReferenced.has(attachmentId)) continue
+      const match = /^sha256:([a-f0-9]{64})$/.exec(attachmentId)
+      if (match?.[1] === undefined) continue
+      rmSync(join(root, 'attachments', 'v1', 'objects', match[1].slice(0, 2), match[1]), { force: true })
+    }
+  }
+
+  private readRoleSelf(roleId: string): string {
+    if (this.deletedRoles.has(roleId)) throw new UnknownRoleError(roleId)
+    return this.selfMemory.read(roleId)
+  }
+
+  private readRoleMarkdownContext(roleId: string): string {
+    if (this.deletedRoles.has(roleId)) throw new UnknownRoleError(roleId)
+    return this.markdownMemory.context(roleId)
   }
 
   private requireMemoryTable(): KvTable<string, StoredRoleMemoryRecord> {

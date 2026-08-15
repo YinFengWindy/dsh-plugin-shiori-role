@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 export const DEFAULT_SELF_MD = `# 我是谁
@@ -68,15 +68,18 @@ export class RoleFiles {
         if (!entry.isDirectory()) return []
         const id = entry.name
         try {
+          safeRoleId(id)
           const value = JSON.parse(readFileSync(join(root, id, 'role.json'), 'utf8')) as Record<string, unknown>
           if (value.deletedAt !== undefined) return []
           const name = typeof value.name === 'string' ? value.name.trim() : ''
           const prompt = typeof value.prompt === 'string' ? value.prompt.trim() : ''
+          if (!name) throw new Error('name must not be empty')
+          if (!prompt) throw new Error('prompt must not be empty')
           const createdAt = typeof value.createdAt === 'string' ? value.createdAt : new Date(0).toISOString()
           const updatedAt = typeof value.updatedAt === 'string' ? value.updatedAt : createdAt
-          return name && prompt ? [{ id, name, prompt, introduction: typeof value.introduction === 'string' ? value.introduction : '', createdAt, updatedAt }] : []
-        } catch {
-          return []
+          return [{ id, name, prompt, introduction: typeof value.introduction === 'string' ? value.introduction : '', createdAt, updatedAt }]
+        } catch (error) {
+          throw new Error(`failed to read role definition '${id}': ${String(error)}`, { cause: error })
         }
       })
     } catch (error) {
@@ -85,15 +88,9 @@ export class RoleFiles {
     }
   }
 
-  /** Mark a deleted role file so startup migration cannot resurrect it. */
-  removeRoleDefinition(roleId: string): void {
-    const path = join(this.roleDir(roleId), 'role.json')
-    try {
-      const current = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
-      writeFileSync(path, JSON.stringify({ ...current, deletedAt: new Date().toISOString() }, null, 2) + '\n', 'utf8')
-    } catch (error) {
-      if ((error as { code?: unknown }).code !== 'ENOENT') throw error
-    }
+  /** Physically remove the exact role directory and all role-owned memory files. */
+  deleteRole(roleId: string): void {
+    rmSync(this.roleDir(roleId), { recursive: true, force: true })
   }
 
   /** Ensure all canonical Shiori role-memory documents exist. */

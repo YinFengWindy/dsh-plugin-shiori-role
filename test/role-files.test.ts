@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -120,4 +120,16 @@ test('rejects traversal through role ids', () => {
     () => new RoleFiles('C:/tmp').writeRoleDefinition({ id: '../escape', name: 'bad', prompt: 'bad' }),
     /invalid role id/,
   )
+})
+
+test('fails loudly when a persisted role definition is malformed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shiori-role-invalid-definition-'))
+  try {
+    const roleDir = join(root, 'shiori-plugin', 'role', 'broken')
+    await mkdir(roleDir, { recursive: true })
+    await writeFile(join(roleDir, 'role.json'), '{not-json', 'utf8')
+    assert.throws(() => new RoleFiles(root).listRoleDefinitions(), /failed to read role definition 'broken'/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })

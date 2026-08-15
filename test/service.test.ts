@@ -8,6 +8,7 @@ import { createScope, scopeOf, type Scope } from '@deepseek-ai/dsh-scope'
 import SystemPrompt, { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { ShioriRoleService, type Config as RoleServiceConfig } from '../src/service.ts'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -125,9 +126,15 @@ test('persists a workspace default and binds it once to a new Agent scope', asyn
   await scope.dispose()
 })
 
-async function agent(ctx: Context, rawId: string, cwd: string): Promise<{ agent: Agent, scope: Scope }> {
+async function agent(ctx: Context, rawId: string, cwd: string, parentSession?: string): Promise<{ agent: Agent, scope: Scope }> {
   const id = SessionId(rawId)
-  const session = Session.create(id, undefined, { version: 0, id, createdAt: Date.now(), cwd })
+  const session = Session.create(id, undefined, {
+    version: 0,
+    id,
+    createdAt: Date.now(),
+    cwd,
+    ...(parentSession === undefined ? {} : { parentSession: SessionId(parentSession) }),
+  })
   const value = {
     id,
     session,
@@ -190,6 +197,81 @@ test('automatically mounts workspace roles and preserves a resumed session bindi
   await second.scope.dispose()
 })
 
+test('leaves a blank workspace session selectable until its first prompt', async t => {
+  const ctx = new Context()
+  const domain = memoryDomain()
+  const attachments = attachmentService()
+  ctx.provide('storageDomain', domain.service as never)
+  ctx.provide('attachments', attachments.service as never)
+  ctx.provide('workspaceRegistry', {
+    list: () => [{ id: 'workspace-a', path: 'C:\\workspace' }],
+    resolveByPath: async () => ({ id: 'workspace-a' }),
+  } as never)
+  await ctx.plugin(SystemPrompt)
+  await ctx.plugin(ToolRuntime)
+  await ctx.plugin(AgentRegistry)
+  await pluginService(ctx, t, {
+    memoryRoot: await isolatedMemoryRoot(t),
+    roles: [
+      { id: 'maintainer', name: 'Maintainer', prompt: 'Maintainer prompt.' },
+      { id: 'writer', name: 'Writer', prompt: 'Writer prompt.' },
+    ],
+  })
+  await ctx.shioriRole.select('workspace-a' as never, 'maintainer')
+
+  const created = await agent(ctx, 'session-bound-at-create', 'C:\\workspace')
+  const dispose = ctx.agents.register(created.agent)
+  assert.equal((await ctx.shioriRole.sessionSnapshot('session-bound-at-create')).locked, false)
+  const staged = await ctx.shioriRole.stageSessionRole('session-bound-at-create', 'writer')
+  assert.equal(staged.pendingRoleId, 'writer')
+  assert.equal(staged.locked, false)
+  const prompt = renderPrompt(await ctx.systemPrompt.assemble({ agent: created.agent, scope: created.agent }))
+  assert.match(prompt, /Writer prompt/)
+  assert.equal((domain.tables.get('session_roles')?.get('session-bound-at-create') as { roleId?: string })?.roleId, 'writer')
+
+  dispose()
+  await created.scope.dispose()
+})
+
+test('inherits the parent role when a child Agent is created', async t => {
+  const ctx = new Context()
+  const domain = memoryDomain()
+  const attachments = attachmentService()
+  ctx.provide('storageDomain', domain.service as never)
+  ctx.provide('attachments', attachments.service as never)
+  ctx.provide('workspaceRegistry', {
+    list: () => [{ id: 'workspace-a', path: 'C:\\workspace' }],
+    resolveByPath: async () => ({ id: 'workspace-a' }),
+  } as never)
+  await ctx.plugin(SystemPrompt)
+  await ctx.plugin(ToolRuntime)
+  await ctx.plugin(AgentRegistry)
+  await pluginService(ctx, t, {
+    memoryRoot: await isolatedMemoryRoot(t),
+    roles: [
+      { id: 'maintainer', name: 'Maintainer', prompt: 'Maintainer prompt.' },
+      { id: 'writer', name: 'Writer', prompt: 'Writer prompt.' },
+    ],
+  })
+  await ctx.shioriRole.select('workspace-a' as never, 'maintainer')
+
+  const parent = await agent(ctx, 'session-parent', 'C:\\workspace')
+  const disposeParent = ctx.agents.register(parent.agent)
+  await ctx.shioriRole.select('workspace-a' as never, 'writer')
+  const child = await agent(ctx, 'session-child', 'C:\\workspace', 'session-parent')
+  const disposeChild = ctx.agents.register(child.agent)
+
+  assert.equal((domain.tables.get('session_roles')?.get('session-child') as { roleId?: string })?.roleId, undefined)
+  const childPrompt = renderPrompt(await ctx.systemPrompt.assemble({ agent: child.agent, scope: child.agent }))
+  assert.match(childPrompt, /Maintainer prompt/)
+  assert.equal((domain.tables.get('session_roles')?.get('session-child') as { roleId?: string })?.roleId, 'maintainer')
+
+  disposeChild()
+  disposeParent()
+  await child.scope.dispose()
+  await parent.scope.dispose()
+})
+
 test('exposes a client-safe snapshot and updates the workspace default remotely', async t => {
   const ctx = new Context()
   const domain = memoryDomain()
@@ -210,7 +292,7 @@ test('exposes a client-safe snapshot and updates the workspace default remotely'
   assert.equal(selected.activeRoleId, 'maintainer')
 })
 
-test('stages a blank-session role and commits it on first prompt assembly', async t => {
+test('stages a role before Agent creation and commits it at publication', async t => {
   const ctx = new Context()
   const domain = memoryDomain()
   const attachments = attachmentService()
@@ -228,12 +310,11 @@ test('stages a blank-session role and commits it on first prompt assembly', asyn
     ],
   })
 
-  const created = await agent(ctx, 'session-pending', 'C:\\workspace')
-  const dispose = ctx.agents.register(created.agent)
-  assert.equal((await ctx.shioriRole.sessionSnapshot('session-pending')).locked, false)
   const staged = await ctx.shioriRole.stageSessionRole('session-pending', 'writer')
   assert.equal(staged.pendingRoleId, 'writer')
   assert.equal(staged.locked, false)
+  const created = await agent(ctx, 'session-pending', 'C:\\workspace')
+  const dispose = ctx.agents.register(created.agent)
   const prompt = renderPrompt(await ctx.systemPrompt.assemble({ agent: created.agent, scope: created.agent }))
 
   assert.match(prompt, /Writer prompt/)
@@ -245,7 +326,7 @@ test('stages a blank-session role and commits it on first prompt assembly', asyn
   await created.scope.dispose()
 })
 
-test('migrates a legacy premature binding while its live session is still blank', async t => {
+test('preserves a legacy session binding even when its log is still blank', async t => {
   const ctx = new Context()
   const domain = memoryDomain()
   ctx.provide('storageDomain', domain.service as never)
@@ -267,10 +348,9 @@ test('migrates a legacy premature binding while its live session is still blank'
   const created = await agent(ctx, 'legacy-blank', 'C:\\workspace')
   const dispose = ctx.agents.register(created.agent)
 
-  assert.equal((await ctx.shioriRole.sessionSnapshot('legacy-blank')).locked, false)
-  const staged = await ctx.shioriRole.stageSessionRole('legacy-blank', 'writer')
-  assert.equal(staged.pendingRoleId, 'writer')
-  assert.equal(domain.tables.get('session_roles')?.has('legacy-blank'), false)
+  assert.equal((await ctx.shioriRole.sessionSnapshot('legacy-blank')).locked, true)
+  await assert.rejects(ctx.shioriRole.stageSessionRole('legacy-blank', 'writer'), /already bound/)
+  assert.equal((domain.tables.get('session_roles')?.get('legacy-blank') as { roleId?: string })?.roleId, 'maintainer')
   dispose()
   await created.scope.dispose()
 })
@@ -342,14 +422,15 @@ test('reassigns mutable references when their role is deleted', async t => {
   assert.equal((await ctx.shioriRole.sessionSnapshot('blank-session')).pendingRoleId, 'maintainer')
 })
 
-test('soft-deletes roles retained by immutable sessions', async t => {
+test('hard-deletes roles retained by immutable sessions', async t => {
   const ctx = new Context()
   const domain = memoryDomain()
   ctx.provide('storageDomain', domain.service as never)
   ctx.provide('attachments', attachmentService().service as never)
   ctx.provide('workspaceRegistry', { resolveByPath: async () => undefined } as never)
+  const memoryRoot = await isolatedMemoryRoot(t)
   await pluginService(ctx, t, {
-    memoryRoot: await isolatedMemoryRoot(t),
+    memoryRoot,
     roles: [
       { id: 'maintainer', name: 'Maintainer', prompt: 'Maintainer prompt.' },
       { id: 'writer', name: 'Writer', prompt: 'Writer prompt.' },
@@ -359,12 +440,67 @@ test('soft-deletes roles retained by immutable sessions', async t => {
     roleId: 'maintainer', boundAt: '2026-08-14T00:00:00.000Z', bindingVersion: 2,
   })
 
+  // Materialize role-owned memory so deletion must remove the SQLite store too.
+  await ctx.shioriRole.memory().mutate({
+    operation: 'upsert', memoryType: 'profile', summary: 'temporary durable memory',
+    scope: { roleId: 'maintainer', sessionKey: 'bound-session' },
+  })
+
   await ctx.shioriRole.deleteRole('maintainer')
 
   assert.deepEqual((await ctx.shioriRole.catalogSnapshot()).roles.map(role => role.id), ['writer'])
   const session = await ctx.shioriRole.sessionSnapshot('bound-session')
-  assert.equal(session.roleId, 'maintainer')
-  assert.equal(session.roles.find(role => role.id === 'maintainer')?.name, 'Maintainer')
+  assert.equal(session.roleId, undefined)
+  assert.equal(session.roles.find(role => role.id === 'maintainer'), undefined)
+  assert.equal(domain.tables.get('roles')?.has('maintainer'), false)
+  assert.equal(domain.tables.get('session_roles')?.has('bound-session'), false)
+  assert.equal(existsSync(join(memoryRoot, 'shiori-plugin', 'role', 'maintainer')), false)
+  assert.equal(existsSync(join(memoryRoot, 'shiori-plugin', 'role', 'maintainer', 'memory', 'memory2.db')), false)
+})
+
+test('garbage-collects unreferenced local role attachments without deleting shared objects', async t => {
+  const attachmentRoot = await mkdtemp(join(tmpdir(), 'shiori-role-attachments-'))
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = attachmentRoot
+  try {
+    const ctx = new Context()
+    const domain = memoryDomain()
+    ctx.provide('storageDomain', domain.service as never)
+    ctx.provide('attachments', attachmentService().service as never)
+    ctx.provide('workspaceRegistry', { resolveByPath: async () => undefined } as never)
+    await pluginService(ctx, t, {
+      memoryRoot: await isolatedMemoryRoot(t),
+      roles: [
+        { id: 'owner', name: 'Owner', prompt: 'Owner prompt.' },
+        { id: 'other', name: 'Other', prompt: 'Other prompt.' },
+      ],
+    })
+    const unique = 'a'.repeat(64)
+    const shared = 'b'.repeat(64)
+    for (const hash of [unique, shared]) {
+      const bucket = join(attachmentRoot, 'attachments', 'v1', 'objects', hash.slice(0, 2))
+      mkdirSync(bucket, { recursive: true })
+      writeFileSync(join(bucket, hash), 'fixture')
+    }
+    domain.tables.get('role_assets')?.set('owner-unique', {
+      roleId: 'owner', purpose: 'avatar', attachment: { attachmentId: `sha256:${unique}` }, createdAt: '2026-08-15T00:00:00.000Z',
+    })
+    domain.tables.get('role_assets')?.set('owner-shared', {
+      roleId: 'owner', purpose: 'portrait', attachment: { attachmentId: `sha256:${shared}` }, createdAt: '2026-08-15T00:00:00.000Z',
+    })
+    domain.tables.get('role_assets')?.set('other-shared', {
+      roleId: 'other', purpose: 'avatar', attachment: { attachmentId: `sha256:${shared}` }, createdAt: '2026-08-15T00:00:00.000Z',
+    })
+
+    await ctx.shioriRole.deleteRole('owner')
+
+    assert.equal(existsSync(join(attachmentRoot, 'attachments', 'v1', 'objects', 'aa', unique)), false)
+    assert.equal(existsSync(join(attachmentRoot, 'attachments', 'v1', 'objects', 'bb', shared)), true)
+  } finally {
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+    await rm(attachmentRoot, { recursive: true, force: true })
+  }
 })
 
 test('extracts durable memories after a completed turn when extraction is configured', async () => {
