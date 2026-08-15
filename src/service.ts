@@ -592,8 +592,8 @@ export class ShioriRoleService extends TypertRemoteService {
       const transcript = turnTranscript(agent, turn)
       if (!transcript) return
       const configuredExtraction = this.effectiveMemoryConfig().extraction
-      const harnessChat = configuredExtraction === undefined && this.ctx.get('llm') !== undefined
-        ? new HarnessMemoryChatClient(this.ctx, agent, turn, role.id, signal)
+      const harnessChat = configuredExtraction === undefined && agent.ctx.get('llm') !== undefined
+        ? new HarnessMemoryChatClient(agent.ctx, agent, turn, role.id, signal)
         : undefined
       const result = await this.requireMemoryEngine(role.id).ingest({
         content: transcript,
@@ -664,10 +664,10 @@ export class ShioriRoleService extends TypertRemoteService {
   private resolveSelfSeedChat(roleId: string, agent: Agent, turn: number): MemoryChatClient | undefined {
     const configured = this.effectiveMemoryConfig().extraction
     if (configured !== undefined) return new ChatClient(configured)
-    if (this.ctx.get('llm') === undefined) return undefined
+    if (agent.ctx.get('llm') === undefined) return undefined
     try {
       return new HarnessSemanticChatClient(
-        this.ctx,
+        agent.ctx,
         agent,
         roleId,
         'self-seed',
@@ -691,7 +691,7 @@ export class ShioriRoleService extends TypertRemoteService {
     const configured = this.effectiveMemoryConfig().extraction
     const route = { provider: summaryEvent.data.provider, model: summaryEvent.data.model }
     const consolidationChat = configured === undefined
-      ? new HarnessSemanticChatClient(this.ctx, agent, roleId, 'consolidation', route, summaryEvent.seq)
+          ? new HarnessSemanticChatClient(agent.ctx, agent, roleId, 'consolidation', route, summaryEvent.seq)
       : new ChatClient(configured)
     const result = await consolidateSemantics(conversation, this.roleFiles.readMemory(roleId), consolidationChat)
     this.markdownMemory.appendCompaction(roleId, sourceRef, result.events, result.pending)
@@ -702,13 +702,13 @@ export class ShioriRoleService extends TypertRemoteService {
     if (pending) {
       try {
         const memoryChat = configured === undefined
-          ? new HarnessSemanticChatClient(this.ctx, agent, roleId, 'memory-merge', route, summaryEvent.seq)
+          ? new HarnessSemanticChatClient(agent.ctx, agent, roleId, 'memory-merge', route, summaryEvent.seq)
           : new ChatClient(configured)
         if (!await this.markdownMemory.mergePending(roleId, pending, memoryChat)) {
           throw new Error('shiori-role: MEMORY.md optimizer produced no content')
         }
         const selfChat = configured === undefined
-          ? new HarnessSemanticChatClient(this.ctx, agent, roleId, 'self-update', route, summaryEvent.seq)
+          ? new HarnessSemanticChatClient(agent.ctx, agent, roleId, 'self-update', route, summaryEvent.seq)
           : new ChatClient(configured)
         if (!await this.selfMemory.update(roleId, pending, selfChat)) {
           throw new Error('shiori-role: SELF.md optimizer produced no content')
@@ -721,7 +721,7 @@ export class ShioriRoleService extends TypertRemoteService {
     }
 
     const recentChat = configured === undefined
-      ? new HarnessSemanticChatClient(this.ctx, agent, roleId, 'recent-context', route, summaryEvent.seq)
+      ? new HarnessSemanticChatClient(agent.ctx, agent, roleId, 'recent-context', route, summaryEvent.seq)
       : new ChatClient(configured)
     this.markdownMemory.writeRecentContext(roleId, await consolidateRecentContext({
       previous: this.markdownMemory.readRecentContext(roleId),

@@ -763,16 +763,6 @@ test('generates SELF.md when a newly created role first enters an LLM-backed ses
       list: () => [{ id: 'workspace-a', path: 'C:\\workspace' }],
       resolveByPath: async () => ({ id: 'workspace-a' }),
     } as never)
-    ctx.provide('llm', {
-      async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-        requests.push(options)
-        const text = '# 我是谁\n\n## 我的性格与形象\n- 我是吟风。\n\n## 我对你的理解\n- 我还在认识你。\n\n## 我们的关系\n- 我们刚刚相遇。'
-        yield { type: 'block-start', index: 0, blockType: 'text' }
-        yield { type: 'text-delta', index: 0, text }
-        yield { type: 'block-end', index: 0, block: { type: 'text', text } }
-        yield { type: 'finish', reason: { kind: 'stop' } }
-      },
-    } as never)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(AgentRegistry)
@@ -783,6 +773,16 @@ test('generates SELF.md when a newly created role first enters an LLM-backed ses
     await ctx.shioriRole.select('workspace-a' as never, 'new-role')
 
     const created = await agent(ctx, 'session-self-seed', 'C:\\workspace')
+    created.agent.ctx.provide('llm', {
+      async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+        requests.push(options)
+        const text = '# 我是谁\n\n## 我的性格与形象\n- 我是吟风。\n\n## 我对你的理解\n- 我还在认识你。\n\n## 我们的关系\n- 我们刚刚相遇。'
+        yield { type: 'block-start', index: 0, blockType: 'text' }
+        yield { type: 'text-delta', index: 0, text }
+        yield { type: 'block-end', index: 0, block: { type: 'text', text } }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      },
+    } as never)
     Object.assign(created.agent.options, { provider: 'deepseek', model: 'deepseek-chat' })
     const dispose = ctx.agents.register(created.agent)
     const session = created.agent.session as Session
