@@ -233,6 +233,71 @@ test('leaves a blank workspace session selectable until its first prompt', async
   await created.scope.dispose()
 })
 
+test('opens a workspace with no default role before the blank session selects one', async t => {
+  const ctx = new Context()
+  const domain = memoryDomain()
+  ctx.provide('storageDomain', domain.service as never)
+  ctx.provide('attachments', attachmentService().service as never)
+  ctx.provide('workspaceRegistry', {
+    list: () => [{ id: 'workspace-a', path: 'C:\\workspace' }],
+    resolveByPath: async () => ({ id: 'workspace-a' }),
+  } as never)
+  await ctx.plugin(SystemPrompt)
+  await ctx.plugin(ToolRuntime)
+  await ctx.plugin(AgentRegistry)
+  await pluginService(ctx, t, {
+    memoryRoot: await isolatedMemoryRoot(t),
+    roles: [
+      { id: 'maintainer', name: 'Maintainer', prompt: 'Maintainer prompt.' },
+      { id: 'writer', name: 'Writer', prompt: 'Writer prompt.' },
+    ],
+  })
+
+  const created = await agent(ctx, 'session-unselected-workspace', 'C:\\workspace')
+  const dispose = ctx.agents.register(created.agent)
+  const blank = await ctx.shioriRole.sessionSnapshot('session-unselected-workspace')
+  assert.equal(blank.locked, false)
+  assert.equal(blank.roleId, undefined)
+  assert.equal(blank.roles.length, 2)
+  assert.deepEqual(ctx.tools.schemas(created.agent).map(tool => tool.name), [])
+
+  await ctx.shioriRole.stageSessionRole('session-unselected-workspace', 'writer')
+  assert.deepEqual(ctx.tools.schemas(created.agent).map(tool => tool.name), ['recall_memory', 'memorize', 'forget_memory'])
+  const prompt = renderPrompt(await ctx.systemPrompt.assemble({ agent: created.agent, scope: created.agent }))
+  assert.match(prompt, /Writer prompt/)
+  dispose()
+  await created.scope.dispose()
+})
+
+test('bypasses role prompt and memory tools when a session uses no role', async t => {
+  const ctx = new Context()
+  const domain = memoryDomain()
+  ctx.provide('storageDomain', domain.service as never)
+  ctx.provide('attachments', attachmentService().service as never)
+  ctx.provide('workspaceRegistry', {
+    list: () => [{ id: 'workspace-a', path: 'C:\\workspace' }],
+    resolveByPath: async () => ({ id: 'workspace-a' }),
+  } as never)
+  await ctx.plugin(SystemPrompt, { persona: 'Host persona.' })
+  await ctx.plugin(ToolRuntime)
+  await ctx.plugin(AgentRegistry)
+  await pluginService(ctx, t, {
+    memoryRoot: await isolatedMemoryRoot(t),
+    roles: [{ id: 'optional-role', name: 'Optional', prompt: 'Optional role prompt.' }],
+  })
+
+  const created = await agent(ctx, 'session-without-role', 'C:\\workspace')
+  const dispose = ctx.agents.register(created.agent)
+  const prompt = renderPrompt(await ctx.systemPrompt.assemble({ agent: created.agent, scope: created.agent }))
+
+  assert.match(prompt, /Host persona/)
+  assert.doesNotMatch(prompt, /Optional role prompt/)
+  assert.deepEqual(ctx.tools.schemas(created.agent).map(tool => tool.name), [])
+  assert.equal(domain.tables.get('session_roles')?.has('session-without-role'), false)
+  dispose()
+  await created.scope.dispose()
+})
+
 test('inherits the parent role when a child Agent is created', async t => {
   const ctx = new Context()
   const domain = memoryDomain()

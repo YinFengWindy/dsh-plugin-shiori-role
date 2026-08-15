@@ -40,7 +40,7 @@ dependencies:
 
 `ShioriRoleService` stores editable roles, assets, workspace defaults, pending blank-session selections, and immutable session bindings in the `shiori_role` storage domain.
 
-The composer may stage a role before a blank Agent is created. A blank Agent remains selectable until its first System Prompt assembly; the plugin then resolves and persists the pending or workspace role before model execution continues. Existing version-1 bindings remain immutable once a session has used them, and non-blank sessions never hot-switch.
+The composer may stage a role before a blank Agent is created. A blank Agent remains selectable until its first System Prompt assembly; the plugin then resolves and persists the pending or workspace role before model execution continues. A session with no selected or workspace-default role bypasses the plugin entirely: it receives no role prompt, Markdown memory context, or role memory tools. Existing version-1 bindings remain immutable once a session has used them, and non-blank sessions never hot-switch.
 
 Deleting a role is a physical deletion: its catalog record, session bindings, assets references, Markdown files, and role-owned SQLite memory2 database are removed. Existing sessions no longer restore that role. Mutable pending and workspace references are reassigned to the earliest remaining role, and every client surface refreshes from the same catalog mutation signal.
 
